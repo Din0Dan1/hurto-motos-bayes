@@ -40,3 +40,35 @@ table(hurtos$cantidad) #Sí 86410
 
 # Filas repetidas
 sum(duplicated(hurtos)) #7625
+
+# ---- Limpieza -----
+hurtos_limpio <- hurtos |> 
+  distinct()|> #quitar duplicados
+  mutate(fecha = as.Date(substr(fecha_hecho, 1, 10)), #de texto a fecha
+          anio = as.integer(format(fecha, "%Y")),
+          mes = as.integer(format(fecha, "%m"))) |>
+  filter(anio >= 2011) #periodo de trabajo
+
+#convertir faltantes a NA
+hurtos_limpio <- hurtos_limpio |>
+  mutate(codigo_comuna = na_if(codigo_comuna, "SIN DATO"),
+         sexo = na_if(sexo , "Sin dato"),
+         modelo = na_if(modelo, -1),
+         edad = na_if(edad, -1))
+
+#¿Funcionó?
+sum(is.na(hurtos_limpio$edad)) #Sí, 2531 NA
+
+#Reclasificación de las categorías de modalidad
+hurtos_limpio <- hurtos_limpio |>
+  mutate(mecanismo = case_when(
+    modalidad %in% c("Atraco", "Miedo o terror",
+                     "Enfrentamiento con la fuerza pública") ~ "Violencia",
+    modalidad %in% c("Halado", "Descuido", "Llave maestra",
+                     "Desvalijar o descuartizar")             ~ "Sin contacto",
+    modalidad %in% c("Engaño", "Escopolamina", "Abuso de confianza",
+                     "Suplantación", "Tóxico o agente químico") ~ "Engaño"
+  ))
+
+table(hurtos_limpio$modalidad, hurtos_limpio$mecanismo, useNA = "ifany")
+
