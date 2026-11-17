@@ -1,0 +1,234 @@
+---
+title: "Trabajo Final Bayesiana"
+format: html
+editor: visual
+---
+
+## Limpiar base de datos
+
+```{r}
+library(dplyr)
+hurtos <- read.csv("C:/Users/maria/OneDrive/Escritorio/unal/Bayesiana/Proyecto/hurto_de_moto.csv", stringsAsFactors = FALSE)
+
+```
+
+```{r}
+dim(hurtos)
+glimpse(hurtos)
+
+table(hurtos$codigo_comuna)
+table(hurtos$sexo)
+table(hurtos$modalidad)
+
+```
+
+```{r}
+# Valores -1 (faltantes en columnas numéricas)
+sum(hurtos$edad == -1) #2982
+sum(hurtos$modelo == -1) #25023
+
+# ¿cantidad siempre vale 1?
+table(hurtos$cantidad) #Sí 86410
+
+# Filas repetidas
+sum(duplicated(hurtos)) #7625
+
+# ---- Limpieza -----
+hurtos_limpio <- hurtos |> 
+  distinct()|> #quitar duplicados
+  mutate(fecha = as.Date(substr(fecha_hecho, 1, 10)), #de texto a fecha
+         anio = as.integer(format(fecha, "%Y")),
+         mes = as.integer(format(fecha, "%m"))) |>
+  filter(anio >= 2011) #periodo de trabajo
+
+#convertir faltantes a NA
+hurtos_limpio <- hurtos_limpio |>
+  mutate(codigo_comuna = na_if(codigo_comuna, "SIN DATO"),
+         sexo = na_if(sexo , "Sin dato"),
+         modelo = na_if(modelo, -1),
+         edad = na_if(edad, -1))
+
+#¿Funcionó?
+sum(is.na(hurtos_limpio$edad)) #Sí, 2531 NA
+
+#Reclasificación de las categorías de modalidad
+hurtos_limpio <- hurtos_limpio |>
+  mutate(mecanismo = case_when(
+    modalidad %in% c("Atraco", "Miedo o terror",
+                     "Enfrentamiento con la fuerza pública") ~ "Violencia",
+    modalidad %in% c("Halado", "Descuido", "Llave maestra",
+                     "Desvalijar o descuartizar")             ~ "Sin contacto",
+    modalidad %in% c("Engaño", "Escopolamina", "Abuso de confianza",
+                     "Suplantación", "Tóxico o agente químico") ~ "Engaño"
+  ))
+
+table(hurtos_limpio$modalidad, hurtos_limpio$mecanismo, useNA = "ifany")
+```
+
+### Agregar columna estrato
+
+```{r}
+#Evaluemos la propocion de Nas en altitud y longitud
+
+names(hurtos)                                   # ¿cómo se llaman latitud y longitud?
+mean(is.na(hurtos_limpio$codigo_barrio))              # proporción de faltantes
+sum(hurtos_limpio$longitud == 0, na.rm = TRUE)   # ceros usados como faltante
+
+# Si muchos puntos comparten coordenadas exactas, probablemente son centroides
+# de barrio (geocodificación aproximada) y la precisión es aparente
+hurtos_limpio |> count(latitud, longitud, sort = TRUE) |> head(10)
+
+#hurtos_limpio %>%
+#  filter(is.na(longitud) | is.na(latitud))
+```
+
+```{r}
+# a) ¿Cuántas filas sin coordenada válida tienen barrio utilizable?
+#    (revisa también si el faltante viene escrito como "SIN DATO" o vacío)
+
+
+# Coordenada válida: no faltante y dentro de un rectángulo amplio de Medellín
+hurtos_limpio <- hurtos_limpio |>
+  mutate(coord_valida = !is.na(latitud) & !is.na(longitud) &
+           between(latitud, 6.10, 6.45) & between(longitud, -75.75, -75.40))
+
+hurtos_limpio |>
+  filter(!coord_valida) |>
+  summarise(n = n(),
+            con_barrio = sum(!is.na(codigo_barrio)))
+
+```
+
+```{r}
+# ---- Estrato por barrio (capa de la Alcaldía de Medellín) ----
+
+library(sf)
+library(dplyr)
+
+ruta_shp  <- "C:/Users/maria/OneDrive/Escritorio/unal/Bayesiana/Proyecto/shapefile_catastro_estratificacion/shapefile_catastro_estratificacion.shp"  # <- AJUSTAR
+umbral_m  <- 50     # distancia máxima (m) para asignar la manzana más cercana
+
+# 1. Leer y preparar manzanas ------------------------------------------------
+manzanas_sf <- st_read(ruta_shp, quiet = TRUE) |>
+  rename_with(tolower)
+
+names(manzanas_sf)   # el .shp trunca nombres a 10 caracteres (codigo_barrio -> codigo_bar)
+st_crs(manzanas_sf)  # debe tener CRS definido
+
+# Detectar la columna del código de barrio aunque esté truncada
+col_barrio <- grep("^codigo_b", names(manzanas_sf), value = TRUE)[1]
+stopifnot(!is.na(col_barrio), "estrato" %in% names(manzanas_sf))
+
+manzanas_sf <- manzanas_sf |>
+  rename(codigo_barrio = all_of(col_barrio)) |>
+  mutate(estrato = as.integer(estrato)) |>
+  filter(estrato %in% 1:6) |>
+  st_make_valid() |>
+  st_transform(3116)        # CRS proyectado (MAGNA-SIRGAS Colombia), unidades en metros
+
+table(manzanas_sf$estrato)  # revisar que solo haya 1 a 6
+
+# 2. Código de barrio normalizado (misma forma en ambas bases) ---------------
+norm_cod <- function(x) {
+  d <- gsub("[^0-9]", "", as.character(x))   # quita "#" y cualquier carácter no numérico
+  n <- suppressWarnings(as.integer(d))
+  ifelse(is.na(n), NA_character_, formatC(n, width = 4, flag = "0"))
+}
+
+
+
+# 3. Estrato predominante por barrio -----------------------------------------
+estrato_barrio <- manzanas_sf |>
+  st_drop_geometry() |>
+  mutate(codigo_barrio = norm_cod(codigo_barrio)) |>
+  count(codigo_barrio, estrato) |>
+  group_by(codigo_barrio) |>
+  summarise(estrato_barrio = estrato[which.max(n)],   # empate: toma el menor estrato
+            prop_moda_barrio = max(n) / sum(n),       # "pureza" del barrio
+            n_manzanas = sum(n))
+
+# 4. Preparar hurtos (columnas nuevas, sin tocar las existentes) --------------
+hurtos_limpio <- hurtos_limpio |>
+  mutate(id_hurto = row_number(),
+         cod_barrio_norm = norm_cod(codigo_barrio),
+         coord_valida = !is.na(latitud) & !is.na(longitud) &
+           between(latitud, 6.10, 6.45) & between(longitud, -75.75, -75.40))
+
+# Comprobar que las llaves coinciden (barrios de hurtos presentes en la capa)
+mean(hurtos_limpio$cod_barrio_norm %in% estrato_barrio$codigo_barrio, na.rm = TRUE)
+
+# 5. Estrato por coordenada ----------------------------------------------------
+# Se asume que latitud/longitud están en WGS84 (EPSG:4326)
+hurtos_sf <- hurtos_limpio |>
+  filter(coord_valida) |>
+  select(id_hurto, latitud, longitud) |>
+  st_as_sf(coords = c("longitud", "latitud"), crs = 4326) |>
+  st_transform(3116)
+
+# 5a. Punto dentro de manzana
+est_coord <- st_join(hurtos_sf, manzanas_sf[, "estrato"], join = st_within) |>
+  st_drop_geometry() |>
+  distinct(id_hurto, .keep_all = TRUE)       # por si hay manzanas traslapadas
+
+# 5b. Puntos en calles/esquinas: manzana más cercana si está a <= umbral_m
+pend <- hurtos_sf |> filter(id_hurto %in% est_coord$id_hurto[is.na(est_coord$estrato)])
+idx  <- st_nearest_feature(pend, manzanas_sf)
+dist <- as.numeric(st_distance(pend, manzanas_sf[idx, ], by_element = TRUE))
+
+cercanas <- tibble(id_hurto = pend$id_hurto,
+                   estrato_cerca = ifelse(dist <= umbral_m, manzanas_sf$estrato[idx], NA_integer_))
+
+est_coord <- est_coord |>
+  left_join(cercanas, by = "id_hurto") |>
+  mutate(estrato_coord = coalesce(estrato, estrato_cerca)) |>
+  select(id_hurto, estrato_coord)
+
+# 6. Unir a la base y construir el estrato final -------------------------------
+hurtos_estrato <- hurtos_limpio |>
+  left_join(est_coord, by = "id_hurto") |>
+  left_join(estrato_barrio |> select(cod_barrio_norm = codigo_barrio,
+                                     estrato_barrio, prop_moda_barrio),
+            by = "cod_barrio_norm") |>
+  mutate(estrato_final  = coalesce(estrato_coord, estrato_barrio),
+         estrato_fuente = case_when(!is.na(estrato_coord)  ~ "coordenada",
+                                    !is.na(estrato_barrio) ~ "barrio",
+                                    TRUE                   ~ NA_character_))
+
+
+
+```
+
+```{r}
+
+table(hurtos_estrato$estrato_fuente, useNA = "ifany")
+mean(is.na(hurtos_estrato$estrato_final))     # filas sin estrato
+
+# ¿Qué tan buena es la moda del barrio? Concordancia con el estrato por coordenada
+hurtos_estrato |>
+  filter(!is.na(estrato_coord), !is.na(estrato_barrio)) |>
+  summarise(concordancia = mean(estrato_coord == estrato_barrio))
+
+
+```
+
+```{r}
+# 8. Guardar ---------------------------------------------------------------------
+write.csv(hurtos_estrato,
+          "C:/Users/maria/OneDrive/Escritorio/unal/Bayesiana/Proyecto/hurtos_limpio.csv",
+          row.names = FALSE)
+```
+
+```{r}
+sin_estrato <- hurtos_estrato |> filter(is.na(estrato_final))
+
+# ¿En qué comunas se concentran?
+sin_estrato |> count(codigo_comuna, sort = TRUE) |> head(10)
+
+# ¿Qué códigos de barrio no están en la capa? (se muestra el original, con su formato)
+sin_estrato |> filter(!is.na(cod_barrio_norm)) |>
+  count(codigo_barrio, sort = TRUE) |> head(15)
+
+# ¿Se concentran en ciertos años?
+hurtos_estrato |> group_by(anio) |>
+  summarise(prop_sin_estrato = mean(is.na(estrato_final)))
+```
