@@ -1,0 +1,267 @@
+---
+title: "Limpieza de la base de hurto de motocicletas"
+subtitle: "Trabajo final: Estadística Bayesiana"
+format:
+  html:
+    toc: true
+    code-fold: show
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+**Entrada:** `datos/crudos/hurto_de_moto.csv` (MEData, Alcaldía de Medellín) **Salida:** `datos/procesados/hurtos_limpio.csv`
+
+```{r}
+library(dplyr)
+library(here)   # rutas desde la raíz del proyecto relativas
+```
+
+## 0. Carga y vista general
+
+```{r}
+hurtos <- read.csv(here("datos", "crudos", "hurto_de_moto.csv"), stringsAsFactors = FALSE)
+n_original <- nrow(hurtos)
+
+dim(hurtos)
+glimpse(hurtos)
+```
+
+La base original tiene `r format(n_original, big.mark = " ")` registros y `r ncol(hurtos)` columnas.
+
+## 1. ¿Qué representa cada fila?
+
+```{r}
+table(hurtos$cantidad)
+```
+
+La columna `cantidad` vale `r paste(unique(hurtos$cantidad), collapse = ", ")` en todos los registros: **cada fila es un robo**. Para construir los conteos basta contar filas. Esta columna no da ninguna información.
+
+## 2. Fecha
+
+`fecha_hecho` viene como texto (por ejemplo, `r hurtos$fecha_hecho[1]`). Se conserva solo la fecha y se extraen año y mes.
+
+```{r}
+hurtos <- hurtos |>
+  mutate(fecha = as.Date(substr(fecha_hecho, 1, 10)),
+         anio  = as.integer(format(fecha, "%Y")),
+         mes   = as.integer(format(fecha, "%m")))
+
+range(hurtos$fecha)
+table(hurtos$anio)
+```
+
+Los registros van de `r min(hurtos$fecha)` a `r max(hurtos$fecha)`.
+
+## 3. Duplicados
+
+**Pregunta:** ¿hay robos registrados más de una vez?
+
+```{r}
+dup <- duplicated(hurtos)
+pct_dup_anio <- round(tapply(dup, hurtos$anio, mean) * 100, 1)
+
+sum(dup)
+pct_dup_anio   # % de registros duplicados por año
+
+# Casi duplicados: iguales en todo excepto la modalidad
+casi <- duplicated(hurtos[, names(hurtos) != "modalidad"]) & !dup
+sum(casi)
+```
+
+**Evidencia:** hay `r format(sum(dup), big.mark = " ")` filas idénticas a otra. Entre 2005 y 2010, entre el `r min(pct_dup_anio[as.character(2005:2010)])` % y el `r max(pct_dup_anio[as.character(2005:2010)])` % de los registros de cada año son duplicados: prácticamente cada robo de esos años aparece dos veces, lo que sugiere un error de carga. Fuera de ese periodo, el porcentaje no supera el `r max(pct_dup_anio[!names(pct_dup_anio) %in% as.character(2005:2010)])` %. Los casi duplicados (`r sum(casi)`) son despreciables.
+
+**Decisión:** eliminar los duplicados exactos.
+
+```{r}
+hurtos_limpio <- hurtos |> distinct()
+```
+
+## 4. Periodo de trabajo
+
+**Pregunta:** además de los duplicados, ¿hay años con problemas de calidad? Para un modelo por barrio, la variable crítica es la ubicación.
+
+```{r}
+pct_sin_comuna <- round(tapply(hurtos_limpio$codigo_comuna == "SIN DATO",
+                               hurtos_limpio$anio, mean) * 100, 1)
+pct_sin_comuna
+```
+
+**Evidencia:** en 2011 el `r pct_sin_comuna["2011"]` % de los registros no tiene comuna, y en 2023 el `r pct_sin_comuna["2023"]` % (además, 2023 llega solo hasta noviembre, como se vio en el rango de fecha). Entre 2012 y 2022 ningún año supera el `r max(pct_sin_comuna[as.character(2012:2022)])` %.
+
+**Decisión:** trabajar con **2012–2022**. Los años 2005–2010 se excluyen por duplicados, y 2011 y 2023 por faltantes en la ubicación, que los harían no comparables con el resto.
+
+```{r}
+hurtos_limpio <- hurtos_limpio |> filter(anio >= 2012, anio <= 2022)
+n_periodo <- nrow(hurtos_limpio)
+```
+
+Quedan `r format(n_periodo, big.mark = " ")` registros.
+
+## 5. Faltantes
+
+**Pregunta:** ¿cómo se marcan los faltantes y cuánto afectan a las variables del análisis? Se revisa sobre los datos de trabajo (sin duplicados y en el periodo elegido).
+
+En las columnas numéricas el faltante se marca con `-1`:
+
+```{r}
+n_edad_falta   <- sum(hurtos_limpio$edad == -1)
+n_modelo_falta <- sum(hurtos_limpio$modelo == -1)
+c(edad = n_edad_falta, modelo = n_modelo_falta)
+```
+
+En las de texto se marca con "Sin dato" o "SIN DATO", a veces seguido de más texto:
+
+```{r}
+es_sin_dato    <- function(x) grepl("^sin dato", tolower(x))
+columnas_texto <- names(hurtos_limpio)[sapply(hurtos_limpio, is.character)]
+pct_sin_dato   <- sapply(hurtos_limpio[columnas_texto], function(x) mean(es_sin_dato(x)) * 100)
+
+round(sort(pct_sin_dato, decreasing = TRUE), 1)
+```
+
+```{r}
+#| include: false
+columnas_vacias <- names(pct_sin_dato)[pct_sin_dato == 100]
+```
+
+**Columnas del análisis.** Las preguntas de investigación son sobre *dónde* y *cuándo* ocurren los robos, así que hay dos tipos de columnas imprescindibles:
+
+- **Tiempo:** `fecha` (y de ella, año y mes).
+- **Ubicación:** `codigo_barrio` y `codigo_comuna`, y las coordenadas `latitud` y `longitud` para mapas y validaciones.
+
+Las demás columnas solo describen el robo o a la víctima. De ellas se conservan las que aportan contexto (sexo, edad, modalidad y modelo de la moto) siempre que tengan una calidad aceptable. El umbral que se usa es:
+
+```{r}
+umbral_faltantes <- 5   # % máximo de faltantes para usar una variable sin advertencias
+```
+
+**Evidencia:**
+
+- `r length(columnas_vacias)` columnas tienen el 100 % de faltantes (por ejemplo, `r paste(head(columnas_vacias, 3), collapse = ", ")`). No aportan información y se descartan.
+- Las columnas de ubicación cumplen el umbral con holgura: comuna `r round(pct_sin_dato["codigo_comuna"], 1)` % y barrio `r round(pct_sin_dato["codigo_barrio"], 1)` % de faltantes (los códigos de barrio que no corresponden a barrios se revisan en la sección 7).
+- Entre las descriptivas, sexo (`r round(pct_sin_dato["sexo"], 1)` %), modalidad (`r round(pct_sin_dato["modalidad"], 1)` %) y edad (`r round(n_edad_falta / n_periodo * 100, 1)` %) cumplen el umbral. El modelo de la moto no: le falta al `r round(n_modelo_falta / n_periodo * 100, 1)` % de los registros.
+- Otras columnas con buena calidad (`lugar`, `color`, `arma_medio`) no responden a las preguntas de investigación. `arma_medio` se usa solo como apoyo para interpretar las modalidades (sección 6).
+
+**Decisión:** convertir los marcadores de faltante en `NA`, que es como R los reconoce. El modelo de la moto se conserva solo para el análisis descriptivo, con la advertencia de su alto porcentaje de faltantes. La selección final de columnas se hace al guardar (sección 8).
+
+```{r}
+hurtos_limpio <- hurtos_limpio |>
+  mutate(codigo_comuna = na_if(codigo_comuna, "SIN DATO"),
+         sexo          = na_if(sexo, "Sin dato"),
+         edad          = na_if(edad, -1),
+         modelo        = na_if(modelo, -1))
+
+sum(is.na(hurtos_limpio$edad)) == n_edad_falta   # verificación
+```
+
+## 6. Modalidad
+
+**Pregunta:** ¿se pueden usar las modalidades tal como vienen?
+
+```{r}
+tabla_modalidad <- sort(table(hurtos_limpio$modalidad), decreasing = TRUE)
+pct_modalidad   <- round(prop.table(tabla_modalidad) * 100, 1)
+pct_modalidad
+```
+
+**Evidencia:** halado (`r pct_modalidad["Halado"]` %) y atraco (`r pct_modalidad["Atraco"]` %) concentran casi todos los casos. Las demás modalidades tienen muy pocos registros, insuficientes para estimar algo por separado al desagregar por barrio y año.
+
+Para agruparlas con sentido hay que entender qué distingue a las dos principales. El medio usado en cada modalidad lo muestra:
+
+```{r}
+medio_por_modalidad <- hurtos_limpio |>
+  filter(modalidad %in% c("Halado", "Atraco", "Descuido")) |>
+  count(modalidad, arma_medio) |>
+  group_by(modalidad) |>
+  mutate(pct = round(n / sum(n) * 100, 1)) |>
+  slice_max(pct, n = 2) |>
+  ungroup()
+
+medio_por_modalidad
+```
+
+```{r}
+#| include: false
+pct_medio <- function(mod, medio) {
+  medio_por_modalidad |> filter(modalidad == mod, arma_medio == medio) |> pull(pct)
+}
+```
+
+En el atraco, el `r pct_medio("Atraco", "Arma de fuego")` % de los casos involucra un arma de fuego: hay una persona amenazada. En el halado, la moto se roba estacionada y sin el dueño presente, en general con llave maestra (`r pct_medio("Halado", "Llave maestra")` %). El descuido tampoco involucra arma (`r pct_medio("Descuido", "No")` % sin medio).
+
+**Decisión:** clasificar cada robo según si hubo acción sobre la víctima (amenaza, fuerza o sustancia):
+
+- **Con violencia:** atraco, miedo o terror, enfrentamiento con la fuerza pública, escopolamina, tóxico o agente químico.
+- **Sin violencia:** halado, descuido, llave maestra, desvalijar o descuartizar, engaño, abuso de confianza, suplantación.
+
+La escopolamina y los tóxicos se incluyen en *con violencia*: el Código Penal los trata como poner a la víctima en condiciones de indefensión, que no es violencia en sentido estricto, pero sí implica actuar sobre la persona. "Sin dato" queda como faltante. La lista incluye categorías que no aparecen en 2012–2022, para que la clasificación funcione si se cambia el periodo.
+
+```{r}
+hurtos_limpio <- hurtos_limpio |>
+  mutate(violencia = case_when(
+    modalidad %in% c("Atraco", "Miedo o terror", "Enfrentamiento con la fuerza pública",
+                     "Escopolamina", "Tóxico o agente químico") ~ "Con violencia",
+    modalidad %in% c("Halado", "Descuido", "Llave maestra", "Desvalijar o descuartizar",
+                     "Engaño", "Abuso de confianza", "Suplantación") ~ "Sin violencia"
+  ))
+
+table(hurtos_limpio$modalidad, hurtos_limpio$violencia, useNA = "ifany")  # cada modalidad en un solo grupo
+
+pct_violencia <- round(prop.table(table(hurtos_limpio$violencia)) * 100, 1)
+pct_violencia
+```
+
+El `r pct_violencia["Con violencia"]` % de los robos fue con violencia y el `r pct_violencia["Sin violencia"]` % sin violencia. Como la pregunta de investigación es sobre estrato y espacialidad, esta variable se usa en el análisis descriptivo y no como covariable del modelo principal.
+
+## 7. Código de barrio
+
+**Pregunta:** ¿el código de barrio sirve como llave para cruzar con otras capas?
+
+```{r}
+cod <- sub("#", "", hurtos_limpio$codigo_barrio)
+head(sort(table(cod[!grepl("^[0-9]{4}$", cod)]), decreasing = TRUE), 10)
+```
+
+**Evidencia:** los códigos válidos tienen 4 dígitos (2 de comuna y 2 de barrio) precedidos de "\#". Además aparecen zonas que no son barrios residenciales (`Inst_*`, `AE*`, `AUC*`) y faltantes del tipo "SIN DATO ...".
+
+**Decisión:** quitar el "\#" y dejar como faltante todo código que no tenga exactamente 4 dígitos.
+
+```{r}
+hurtos_limpio <- hurtos_limpio |>
+  mutate(codigo_barrio = sub("#", "", codigo_barrio),
+         tipo_zona = case_when(
+           grepl("^[0-9]{4}$", codigo_barrio) ~ "Barrio",
+           grepl("^Inst", codigo_barrio)      ~ "Institucional",
+           grepl("^AE", codigo_barrio)        ~ "Área de expansión",
+           grepl("^AUC", codigo_barrio)       ~ "Área urbana de corregimiento"
+         ),                                   # "SIN DATO ..." queda en NA: ubicación desconocida
+         codigo_barrio = ifelse(tipo_zona %in% "Barrio", codigo_barrio, NA))
+
+table(hurtos_limpio$tipo_zona, useNA = "ifany")
+
+pct_sin_barrio <- round(mean(is.na(hurtos_limpio$codigo_barrio)) * 100, 1)
+```
+
+El `r pct_sin_barrio` % de los registros queda sin código de barrio válido. Estos registros se mantienen por el momento dado que latitud y longitug registran una coordenada, en el cruce con la capa geográfica se revisara que información se puede recuperar y cuál no.
+
+## 8. Resultado
+
+Se conservan solo las columnas del análisis.
+
+```{r}
+hurtos_limpio <- hurtos_limpio |>
+  select(fecha, anio, mes, codigo_comuna, codigo_barrio, nombre_barrio,
+         latitud, longitud, sexo, edad, modalidad, violencia, modelo)
+
+write.csv(hurtos_limpio, here("datos", "procesados", "hurtos_limpio.csv"), row.names = FALSE)
+```
+
+| Etapa             | Registros                                         |
+|-------------------|---------------------------------------------------|
+| Base original     | `r format(n_original, big.mark = " ")`            |
+| Sin duplicados    | `r format(n_original - sum(dup), big.mark = " ")` |
+| Periodo 2012–2022 | `r format(n_periodo, big.mark = " ")`             |
+
+La base limpia tiene `r format(nrow(hurtos_limpio), big.mark = " ")` registros y `r ncol(hurtos_limpio)` columnas.
