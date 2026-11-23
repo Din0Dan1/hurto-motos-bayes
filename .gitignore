@@ -4,4 +4,5 @@
 .Ruserdata
 datos/crudos/
 datos/procesados/
+Claude outputs/
 *.rds

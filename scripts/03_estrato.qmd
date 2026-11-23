@@ -1,0 +1,96 @@
+---
+title: "03_estrato.qmd"
+format: html
+editor: visual
+---
+
+```{r}
+library(dplyr)
+library(here)
+
+conteos <- read.csv(here("datos", "procesados", "conteos_barrio_anio.csv"),
+                    colClasses = c(codigo_barrio = "character"))
+
+estratos <- jsonlite::fromJSON(here("datos", "crudos", "estratos.json"))$features$attributes
+head(estratos, 10)   # una fila por barrio y estrato: cuántas manzanas de ese estrato tiene el barrio
+```
+
+## 1. ¿Cómo asignar un estrato a cada barrio?
+
+**Pregunta:** el estrato se asigna a cada manzana, no al barrio. Si un barrio tiene manzanas de varios estratos, ¿un solo número lo representa bien?
+
+```{r}
+estratos_urbanos <- estratos |>
+  filter(codigo_barrio %in% conteos$codigo_barrio) |>     # solo los barrios urbanos de la tabla de análisis
+  group_by(codigo_barrio) |>
+  mutate(prop = n_manzanas / sum(n_manzanas)) |>          # proporción de manzanas de cada estrato en el barrio
+  arrange(desc(prop), .by_group = TRUE) |>                # dentro de cada barrio, de mayor a menor proporción
+  ungroup()
+
+estrato_barrio <- estratos_urbanos |>
+  group_by(codigo_barrio) |>
+  summarise(estrato_moda  = estrato[1],                          # estrato con más manzanas (el primero tras ordenar)
+            prop_moda     = prop[1],                             # qué tan dominante es ese estrato
+            diferencia    = ifelse(n() > 1, prop[1] - prop[2], 1),  # ventaja sobre el segundo; 1 si hay un solo estrato
+            n_estratos    = n(),                                 # cuántos estratos distintos tiene el barrio
+            estrato_medio = weighted.mean(estrato, n_manzanas),  # promedio ponderado por manzanas
+            n_manzanas    = sum(n_manzanas),
+            .groups = "drop")
+
+table(estrato_barrio$n_estratos)     # cuántos barrios tienen 1, 2, 3... estratos distintos
+summary(estrato_barrio$prop_moda)    # qué proporción de manzanas reúne el estrato más frecuente
+```
+
+```{r}
+n_barrios    <- nrow(estrato_barrio)
+n_un_estrato <- sum(estrato_barrio$n_estratos == 1)
+n_empate     <- sum(estrato_barrio$diferencia < 0.1)
+```
+
+**Evidencia:**
+
+- Solo `r n_un_estrato` de los `r n_barrios` barrios (`r round(n_un_estrato / n_barrios * 100, 1)` %) tienen un único estrato: la mayoría son mixtos.
+- Aun así, en el barrio típico el estrato más frecuente reúne el `r round(median(estrato_barrio$prop_moda) * 100)` % de las manzanas.
+- Solo en `r n_empate` barrios (`r round(n_empate / n_barrios * 100, 1)` %) el estrato más frecuente le gana al segundo por menos de 10 puntos porcentuales. En casi todos hay un estrato que domina con claridad.
+
+**Decisión:** asignar a cada barrio su **estrato moda** (el estrato con más manzanas) como covariable principal. Es la medida más interpretable ("barrios de estrato 3") y permite ver relaciones no monótonas con el número de robos. Como análisis de sensibilidad se usará el **estrato medio** ponderado por manzanas, que recoge la mezcla de estratos; ambas medidas están muy alineadas (correlación de `r round(cor(estrato_barrio$estrato_moda, estrato_barrio$estrato_medio), 2)`).
+
+Así quedan distribuidos los barrios según su estrato moda:
+
+```{r}
+table(estrato_barrio$estrato_moda)
+```
+## 2. Unir el estrato a los conteos
+
+**Pregunta:** ¿todos los barrios de la tabla de análisis quedan con un estrato asignado?
+
+```{r}
+tabla_analisis <- conteos |>
+  left_join(estrato_barrio, by = "codigo_barrio")    # agrega a cada fila barrio-año las columnas de estrato del barrio
+
+sum(is.na(tabla_analisis$estrato_moda))              # barrios sin estrato: debería ser 0
+n_distinct(tabla_analisis$codigo_barrio)             # 265 barrios
+```
+
+**Evidencia:** los `r n_distinct(tabla_analisis$codigo_barrio)` barrios urbanos tienen estrato asignado (`r sum(is.na(tabla_analisis$estrato_moda))` sin estrato).
+
+**Primera mirada a la relación con los robos:**
+
+```{r}
+robos_estrato <- tabla_analisis |>
+  group_by(estrato_moda) |>
+  summarise(barrios  = n_distinct(codigo_barrio),
+            media    = mean(n),                      # robos promedio por barrio-año
+            desviacion_std = sqrt(var(n)),
+            .groups = "drop")
+robos_estrato
+```
+
+Dos patrones que adelantan el análisis:
+
+- Los robos no crecen ni decrecen con el estrato: suben hasta los estratos 3 y 4 (unos 25 robos por barrio-año) y caen en los extremos (`r round(robos_estrato$media[1], 1)` en estrato 1 y `r round(robos_estrato$media[6], 1)` en estrato 6). La relación parece tener forma de U invertida.
+- En todos los estratos la varianza es mucho mayor que la media, lo que anticipa que un modelo Poisson se quedará corto.
+
+```{r}
+write.csv(tabla_analisis, here("datos", "procesados", "tabla_analisis.csv"), row.names = FALSE)
+```

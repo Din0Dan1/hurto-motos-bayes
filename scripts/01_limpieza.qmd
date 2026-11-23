@@ -226,7 +226,7 @@ head(sort(table(cod[!grepl("^[0-9]{4}$", cod)]), decreasing = TRUE), 10)
 
 **Evidencia:** los códigos válidos tienen 4 dígitos (2 de comuna y 2 de barrio) precedidos de "\#". Además aparecen zonas que no son barrios residenciales (`Inst_*`, `AE*`, `AUC*`) y faltantes del tipo "SIN DATO ...".
 
-**Decisión:** quitar el "\#" y dejar como faltante todo código que no tenga exactamente 4 dígitos.
+**Decisión:** quitar el "#". Solo los códigos de 4 dígitos son barrios; los demás quedan sin código de barrio, pero su tipo de zona se conserva en la columna `tipo_zona` (institucional, área de expansión o área urbana de corregimiento). Los registros "SIN DATO" quedan con ubicación desconocida. Como la mayoría de los registros sin barrio tiene coordenadas, se revisarán de nuevo al cruzar con la capa de barrios.
 
 ```{r}
 hurtos_limpio <- hurtos_limpio |>
