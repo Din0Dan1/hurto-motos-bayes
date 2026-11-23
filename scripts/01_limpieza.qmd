@@ -11,9 +11,12 @@ execute:
   message: false
 ---
 
-**Entrada:** `datos/crudos/hurto_de_moto.csv` (MEData, Alcaldía de Medellín) **Salida:** `datos/procesados/hurtos_limpio.csv`
+**Entrada:** `datos/crudos/hurto_de_moto.csv` (MEData, Alcaldía de Medellín)
+
+**Salida:** `datos/procesados/hurtos_limpio.csv`
 
 ```{r}
+#Las librerías permanecerán ocultas en los siguientes documentos
 library(dplyr)
 library(here)   # rutas desde la raíz del proyecto relativas
 ```
@@ -156,6 +159,29 @@ hurtos_limpio <- hurtos_limpio |>
 sum(is.na(hurtos_limpio$edad)) == n_edad_falta   # verificación
 ```
 
+**Pregunta:** además de los faltantes marcados, ¿hay valores numéricos imposibles o poco plausibles?
+
+```{r}
+n_edad_baja    <- sum(hurtos_limpio$edad < 10, na.rm = TRUE)                    # víctimas menores de 10 años
+n_modelo_viejo <- sum(hurtos_limpio$modelo < 1950, na.rm = TRUE)                # motos anteriores a 1950 (incluye años imposibles)
+dif_modelo     <- hurtos_limpio$anio - hurtos_limpio$modelo                     # años entre el modelo de la moto y el robo
+n_modelo_sig   <- sum(dif_modelo == -1, na.rm = TRUE)                           # modelo del año siguiente al robo
+n_modelo_futuro <- sum(dif_modelo < -1, na.rm = TRUE)                           # modelo posterior al año siguiente
+
+c(edad_baja = n_edad_baja, modelo_viejo = n_modelo_viejo,
+  modelo_siguiente = n_modelo_sig, modelo_futuro = n_modelo_futuro)
+```
+
+**Evidencia:** hay `r n_edad_baja` víctimas con menos de 10 años (varias con edad 1, probablemente un error de digitación) y `r n_modelo_viejo` motos con modelo anterior a 1950, entre ellas años imposibles como 203 o 1010. Además, `r format(n_modelo_sig, big.mark = " ")` motos tienen el modelo del año siguiente al robo, lo cual es normal (las motos se venden con el modelo del año entrante desde mediados de año), mientras que solo `r n_modelo_futuro` tienen una diferencia mayor.
+
+**Decisión:** las edades menores de 10 años y los modelos anteriores a 1950 o posteriores al año siguiente del robo se consideran errores de digitación y pasan a `NA`. El modelo del año siguiente se conserva.
+
+```{r}
+hurtos_limpio <- hurtos_limpio |>
+  mutate(edad   = ifelse(edad < 10, NA, edad),                            # edades implausibles
+         modelo = ifelse(modelo < 1950 | modelo > anio + 1, NA, modelo))  # modelos imposibles
+```
+
 ## 6. Modalidad
 
 **Pregunta:** ¿se pueden usar las modalidades tal como vienen?
@@ -215,7 +241,7 @@ pct_violencia
 
 El `r pct_violencia["Con violencia"]` % de los robos fue con violencia y el `r pct_violencia["Sin violencia"]` % sin violencia. Como la pregunta de investigación es sobre estrato y espacialidad, esta variable se usa en el análisis descriptivo y no como covariable del modelo principal.
 
-## 7. Código de barrio
+## 7. Código de ubicación
 
 **Pregunta:** ¿el código de barrio sirve como llave para cruzar con otras capas?
 
@@ -224,27 +250,27 @@ cod <- sub("#", "", hurtos_limpio$codigo_barrio)
 head(sort(table(cod[!grepl("^[0-9]{4}$", cod)]), decreasing = TRUE), 10)
 ```
 
-**Evidencia:** los códigos válidos tienen 4 dígitos (2 de comuna y 2 de barrio) precedidos de "\#". Además aparecen zonas que no son barrios residenciales (`Inst_*`, `AE*`, `AUC*`) y faltantes del tipo "SIN DATO ...".
+**Evidencia:** los códigos de barrios y veredas tienen 4 dígitos (2 de comuna o corregimiento y 2 de barrio o vereda) precedidos de "\#". Además aparecen zonas que no son barrios: institucionales (`Inst_*`, como universidades o la Terminal de Transporte), áreas de expansión (`AE*`) y áreas urbanas de corregimiento (`AUC*`, las cabeceras de San Antonio de Prado y San Cristóbal). Estas zonas también son unidades de la división administrativa de la ciudad. Por último, hay faltantes del tipo "SIN DATO ...".
 
-**Decisión:** quitar el "#". Solo los códigos de 4 dígitos son barrios; los demás quedan sin código de barrio, pero su tipo de zona se conserva en la columna `tipo_zona` (institucional, área de expansión o área urbana de corregimiento). Los registros "SIN DATO" quedan con ubicación desconocida. Como la mayoría de los registros sin barrio tiene coordenadas, se revisarán de nuevo al cruzar con la capa de barrios.
+**Decisión:** quitar el "#" y conservar el código de todas las unidades, barrios o no, porque todas tienen polígono propio en la capa oficial de barrios y veredas. El tipo de unidad se guarda en la columna `tipo_zona`. Solo los registros "SIN DATO" quedan con ubicación desconocida (`NA`).
 
 ```{r}
 hurtos_limpio <- hurtos_limpio |>
   mutate(codigo_barrio = sub("#", "", codigo_barrio),
          tipo_zona = case_when(
-           grepl("^[0-9]{4}$", codigo_barrio) ~ "Barrio",
+           grepl("^[0-9]{4}$", codigo_barrio) ~ "Barrio o vereda",
            grepl("^Inst", codigo_barrio)      ~ "Institucional",
            grepl("^AE", codigo_barrio)        ~ "Área de expansión",
            grepl("^AUC", codigo_barrio)       ~ "Área urbana de corregimiento"
          ),                                   # "SIN DATO ..." queda en NA: ubicación desconocida
-         codigo_barrio = ifelse(tipo_zona %in% "Barrio", codigo_barrio, NA))
+         codigo_barrio = ifelse(is.na(tipo_zona), NA, codigo_barrio))  # el código se conserva salvo en "SIN DATO"
 
 table(hurtos_limpio$tipo_zona, useNA = "ifany")
 
-pct_sin_barrio <- round(mean(is.na(hurtos_limpio$codigo_barrio)) * 100, 1)
+pct_sin_ubicacion <- round(mean(is.na(hurtos_limpio$codigo_barrio)) * 100, 1)
 ```
 
-El `r pct_sin_barrio` % de los registros queda sin código de barrio válido. Estos registros se mantienen por el momento dado que latitud y longitug registran una coordenada, en el cruce con la capa geográfica se revisara que información se puede recuperar y cuál no.
+Solo el `r pct_sin_ubicacion` % de los registros queda sin ubicación. A pesar de su nombre, la columna `codigo_barrio` guarda el código de cualquier unidad de la división administrativa (barrio, vereda o zona especial).
 
 ## 8. Resultado
 
@@ -252,7 +278,7 @@ Se conservan solo las columnas del análisis.
 
 ```{r}
 hurtos_limpio <- hurtos_limpio |>
-  select(fecha, anio, mes, codigo_comuna, codigo_barrio, nombre_barrio,
+  select(fecha, anio, mes, codigo_comuna, codigo_barrio, nombre_barrio, tipo_zona,
          latitud, longitud, sexo, edad, modalidad, violencia, modelo)
 
 write.csv(hurtos_limpio, here("datos", "procesados", "hurtos_limpio.csv"), row.names = FALSE)

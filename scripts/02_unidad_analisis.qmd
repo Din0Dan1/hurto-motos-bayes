@@ -1,57 +1,74 @@
 ---
-title: "02_unidad_analisis"
-format: html
+title: "Unidad de análisis"
+subtitle: "Trabajo final: Estadística Bayesiana"
+format:
+  html:
+    toc: true
+    code-fold: show
+    embed-resources: true
 editor: visual
+execute:
+  warning: false
+  message: false
 ---
 
-# Análisis de las variables
+**Entradas:** `datos/procesados/hurtos_limpio.csv` y `datos/crudos/barrios.geojson`
 
-Hacemos uso de un JSON llamado estratos que contiene los barrios y comunas del municipio de Medellín
+**Salida:** `datos/procesados/conteos_barrio_anio.csv`
+
+En este documento se pasa de la base limpia, con un registro por robo, a la tabla que usará el modelo: el número de robos por unidad territorial y periodo. La lista completa de unidades sale de la capa oficial de barrios y veredas, para incluir también las que no registran robos.
+
+La capa corresponde a "Límite Administrativo", del servidor de mapas de la Alcaldía de Medellín (Subsecretaría de Catastro), con la división de barrios y veredas actualizada al 17 de diciembre de 2014, fecha de adopción del Plan de Ordenamiento Territorial vigente (Acuerdo 48 de 2014). Se descargó en formato GeoJSON (sistema MAGNA-SIRGAS, EPSG:4686) el 23 de noviembre de 2026.
 
 ```{r}
+#| include: false
 library(dplyr)
 library(tidyr)
 library(here)
-
-hurtos <- read.csv(here("datos", "procesados", "hurtos_limpio.csv"), colClasses = c(codigo_barrio = "character"))
-
-estratos <- jsonlite::fromJSON(here("datos", "crudos", "estratos.json"))$features$attributes
-barrios <- sort(unique(estratos$codigo_barrio))
-length(barrios)
 ```
 
-## 1. ¿Los barrios de los hurtos están en la lista de barrios?
+```{r}
+hurtos <- read.csv(here("datos", "procesados", "hurtos_limpio.csv"), colClasses = c(codigo_barrio = "character"))
 
-Creemos una lista de que compara qué barrios están en la tabla hurtos y no están en estratos
+capa_barrios <- jsonlite::fromJSON(here("datos", "crudos", "barrios.geojson"))$features$properties  # solo los atributos, sin la geometría
+unidades <- sort(capa_barrios$codigo)   # todas las unidades: barrios, veredas y zonas especiales
+length(unidades)
+```
+
+La capa tiene `r length(unidades)` unidades: `r sum(grepl("^[0-9]{4}$", unidades))` barrios y veredas (código de 4 dígitos) y `r sum(!grepl("^[0-9]{4}$", unidades))` zonas especiales (institucionales, áreas de expansión, cabeceras de corregimiento y dos áreas sin nombre).
+
+## 1. ¿Las unidades de los hurtos están en la lista de la capa?
+
+**Pregunta:** ¿los códigos de ubicación de la base de hurtos coinciden con los de la capa oficial?
 
 ```{r}
-con_barrio  <- hurtos |> filter(!is.na(codigo_barrio))
-fuera_lista <- con_barrio |> filter(!codigo_barrio %in% barrios)
+con_ubicacion <- hurtos |> filter(!is.na(codigo_barrio))
+fuera_lista   <- con_ubicacion |> filter(!codigo_barrio %in% unidades)
 
 nrow(fuera_lista)
 sort(table(fuera_lista$codigo_barrio), decreasing = TRUE)
 ```
 
-**Evidencia:** `r nrow(fuera_lista)` registros (`r round(nrow(fuera_lista) / nrow(con_barrio) * 100, 2)` % de los que tienen barrio) tienen un código que no aparece en la capa de estratos.
+**Evidencia:** `r nrow(fuera_lista)` registros tienen un código que no aparece en la capa oficial: la base de hurtos usa la misma división administrativa que la capa, incluidas las zonas especiales (`Inst_*`, `AE*`, `AUC*`).
 
-**Decisión:** se excluyen de los conteos. Se revisarán al cruzar con la capa de barrios, que puede tener una lista distinta.
+**Decisión:** no se excluye ningún registro por este motivo. Todos los robos con ubicación entran en los conteos.
 
 ```{r}
-hurtos_barrio <- con_barrio |> filter(codigo_barrio %in% barrios)
+hurtos_unidad <- con_ubicacion |> filter(codigo_barrio %in% unidades)
 ```
 
 ## 2. Unidad temporal: ¿mes o año?
 
-**Pregunta:** si se cuentan los robos por barrio y mes, ¿hay suficientes casos por celda, o conviene una unidad de tiempo más grande?
+**Pregunta:** si se cuentan los robos por unidad y mes, ¿hay suficientes casos por celda, o conviene una unidad de tiempo más grande?
 
 ```{r}
-por_mes <- hurtos_barrio |> #crea una tabla de frecuencias de hurtos por mes de cada año
+por_mes <- hurtos_unidad |>  # tabla de frecuencias de hurtos por unidad, mes y año
   count(codigo_barrio, anio, mes) |>
-  complete(codigo_barrio = barrios, anio = 2012:2022, mes = 1:12, fill = list(n = 0))
+  complete(codigo_barrio = unidades, anio = 2012:2022, mes = 1:12, fill = list(n = 0))
 
-por_anio <- hurtos_barrio |> #crea una tabla de frecuencias por año
+por_anio <- hurtos_unidad |> # tabla de frecuencias por unidad y año
   count(codigo_barrio, anio) |>
-  complete(codigo_barrio = barrios, anio = 2012:2022, fill = list(n = 0))
+  complete(codigo_barrio = unidades, anio = 2012:2022, fill = list(n = 0))
 
 resumen <- function(x) c(celdas = length(x), media = mean(x), mediana = median(x), pct_ceros = mean(x == 0) * 100, maximo = max(x))
 
@@ -59,71 +76,74 @@ comparacion <- rbind(mes = resumen(por_mes$n), anio = resumen(por_anio$n))
 round(comparacion, 1)
 ```
 
-**Evidencia:** por barrio y mes hay `r comparacion["mes", "celdas"]` celdas con una mediana de `r comparacion["mes", "mediana"]` robos, y el `r round(comparacion["mes", "pct_ceros"], 1)` % de las celdas es cero. Por barrio y año, la mediana sube a `r comparacion["anio", "mediana"]` y los ceros bajan al `r round(comparacion["anio", "pct_ceros"], 1)` %.
+**Evidencia:** por unidad y mes hay `r format(comparacion["mes", "celdas"], big.mark = " ")` celdas, la mediana de robos por celda es `r comparacion["mes", "mediana"]` y el `r round(comparacion["mes", "pct_ceros"], 1)` % de las celdas es cero. Por unidad y año, la mediana sube a `r comparacion["anio", "mediana"]` y los ceros bajan al `r round(comparacion["anio", "pct_ceros"], 1)` %.
 
-**Decisión:** trabajar con conteos por **barrio y año**. Por mes, más de la mitad de las celdas (`r round(comparacion["mes", "pct_ceros"], 1)` %) es cero y la media es de apenas `r round(comparacion["mes", "media"], 2)` robos: la mayoría de las celdas vale 0, 1 o 2, así que cada una aporta muy poca información y el conteo queda cerca de indicar solo si hubo o no hubo robo. Por año, la mediana sube a `r comparacion["anio", "mediana"]` robos y los ceros bajan al `r round(comparacion["anio", "pct_ceros"], 1)` %, lo que deja conteos con variación suficiente para un modelo de conteo. Además, la base pasa de `r format(comparacion["mes", "celdas"], big.mark = " ")` a `r format(comparacion["anio", "celdas"], big.mark = " ")` observaciones, lo que reduce el costo de cómputo del modelo espacial sin cambiar el número de barrios. Se pierde entonces la capacidad de hacer análisis de los datos considerando estaciones del año.\
+**Decisión:** trabajar con conteos por **unidad y año**. Por mes, cerca de la mitad de las celdas (`r round(comparacion["mes", "pct_ceros"], 1)` %) es cero y la media es de apenas `r round(comparacion["mes", "media"], 2)` robos: la mayoría de las celdas vale 0, 1 o 2, así que cada una aporta muy poca información y el conteo queda cerca de indicar solo si hubo o no hubo robo. Por año, la mediana sube a `r comparacion["anio", "mediana"]` robos y los ceros bajan al `r round(comparacion["anio", "pct_ceros"], 1)` %, lo que deja conteos con variación suficiente para un modelo de conteo. Además, la base pasa de `r format(comparacion["mes", "celdas"], big.mark = " ")` a `r format(comparacion["anio", "celdas"], big.mark = " ")` observaciones, lo que reduce el costo de cómputo del modelo espacial sin cambiar el número de unidades. Se pierde la posibilidad de analizar la estacionalidad dentro del año, que no es parte de las preguntas de investigación.
 
-## 3. ¿Todos los barrios son comparables?
+## 3. ¿Todas las unidades son comparables?
 
-**Pregunta:** los 350 barrios de la lista incluyen las veredas de los corregimientos (zona rural). ¿Se comportan como los barrios urbanos?
-
-```{r}
-por_anio <- por_anio |> #Se queda con los dos primeros números del código, correspondientes a la comuna
-  mutate(zona = ifelse(as.integer(substr(codigo_barrio, 1, 2)) <= 16,
-                       "Urbana", "Rural"))  # comunas 01-16: urbana; corregimientos 50-90: rural
-
-total_barrio <- por_anio |>                 # total de robos de cada barrio en todo el periodo
-  group_by(codigo_barrio, zona) |>
-  summarise(total = sum(n), .groups = "drop")
-
-comparacion_zona <- total_barrio |>         # resumen por zona
-  group_by(zona) |>
-  summarise(barrios       = n(),
-            sin_robos     = sum(total == 0),               # barrios sin ningún robo en 11 años
-            robos         = sum(total),
-            mediana_anual = median(total) / 11)            # robos por año del barrio típico
-
-pct_ceros_zona <- tapply(por_anio$n == 0, por_anio$zona, mean) * 100   # % de celdas barrio-año en cero
-comparacion_zona
-```
+**Pregunta:** la capa incluye unidades muy distintas: barrios urbanos, veredas rurales, cabeceras de corregimiento, áreas de expansión y zonas institucionales. ¿Se comportan de forma parecida?
 
 ```{r}
-round(pct_ceros_zona, 1)
+por_anio <- por_anio |>
+  mutate(tipo_unidad = case_when(
+           grepl("^Inst", codigo_barrio)      ~ "Institucional",
+           grepl("^AE", codigo_barrio)        ~ "Área de expansión",
+           grepl("^AUC", codigo_barrio)       ~ "Cabecera de corregimiento",
+           grepl("^SN", codigo_barrio)        ~ "Sin nombre",
+           grepl("^[5-9]0", codigo_barrio)    ~ "Vereda",       # corregimientos 50 a 90
+           TRUE                               ~ "Barrio"),      # comunas 01 a 16
+         zona = ifelse(tipo_unidad == "Vereda", "Rural", "Urbana"))
+
+comparacion_tipo <- por_anio |>
+  group_by(tipo_unidad) |>
+  summarise(unidades      = n_distinct(codigo_barrio),
+            robos         = sum(n),
+            media_anual   = mean(n),                   # robos por unidad y año
+            pct_ceros     = mean(n == 0) * 100,        # % de celdas unidad-año en cero
+            .groups = "drop") |>
+  mutate(pct_robos = robos / sum(robos) * 100) |>
+  arrange(desc(robos))
+
+comparacion_tipo |> mutate(across(where(is.numeric), \(x) round(x, 1)))
 ```
 
 ```{r}
 #| include: false
-rural  <- comparacion_zona |> filter(zona == "Rural")
-urbana <- comparacion_zona |> filter(zona == "Urbana")
+tipo <- function(t, col) comparacion_tipo[[col]][comparacion_tipo$tipo_unidad == t]
 ```
 
-**Evidencia:** la zona rural tiene `r rural$barrios` unidades (veredas), pero solo `r rural$robos` robos en 11 años: el `r round(rural$robos / sum(comparacion_zona$robos) * 100, 1)` % del total. El `r round(pct_ceros_zona["Rural"], 1)` % de sus celdas barrio-año es cero, y `r rural$sin_robos` veredas no registran ningún robo en todo el periodo. En la zona urbana, en cambio, solo el `r round(pct_ceros_zona["Urbana"], 1)` % de las celdas es cero, y el barrio típico tiene `r round(urbana$mediana_anual, 1)` robos por año.
+**Evidencia:**
 
-Además, la vereda es una unidad muy distinta del barrio: más extensa, con menos población y una estratificación rural que no es comparable con la urbana.
+- Los barrios concentran el `r round(tipo("Barrio", "pct_robos"), 1)` % de los robos, con una media de `r round(tipo("Barrio", "media_anual"), 1)` robos por barrio y año y solo `r round(tipo("Barrio", "pct_ceros"), 1)` % de celdas en cero.
+- Las veredas son muy distintas: `r round(tipo("Vereda", "media_anual"), 1)` robos por vereda y año y `r round(tipo("Vereda", "pct_ceros"), 1)` % de ceros. Son unidades más extensas y menos pobladas, con una estratificación rural que no es comparable con la urbana.
+- Las dos cabeceras de corregimiento tienen en promedio `r round(tipo("Cabecera de corregimiento", "media_anual"), 1)` robos al año, y las áreas de expansión `r round(tipo("Área de expansión", "media_anual"), 1)`. Pese a su nombre, varias de estas zonas son urbanas y residenciales: la cabecera de San Antonio de Prado o el área de Pajarito (Ciudadela Nuevo Occidente).
+- Las zonas institucionales (universidades, la Terminal de Transporte, el Estadio, La Alpujarra) reúnen el `r round(tipo("Institucional", "pct_robos"), 1)` % de los robos, pero no tienen vivienda.
+- Las dos áreas "Sin nombre" no registran ningún robo en 11 años. Su código no aparece nunca en la base de hurtos: el sistema de la Policía no las usa, así que sus ceros no indican ausencia de robos sino que esos robos se registran con el código de otra unidad.
 
-**Decisión:** trabajar solo con la **zona urbana** (comunas 1 a 16). La zona rural aporta muy pocos robos, y casi todas sus celdas son cero por la poca población y no por menor riesgo. Mezclarla con la urbana distorsionaría la comparación entre estratos.
+**Decisión:** incluir **todas las unidades** salvo las dos áreas "Sin nombre", cuyos ceros son un artefacto del registro. Excluirlas dejaría por fuera zonas residenciales con muchos robos y abriría huecos en el mapa que afectarían la vecindad del modelo espacial. Las diferencias se tratarán con covariables: una variable de **zona** (urbana o rural) y, en el siguiente documento, una categoría **"No residencial"** del estrato para las unidades sin vivienda.
 
 ```{r}
-por_anio <- por_anio |> filter(zona == "Urbana")
+por_anio <- por_anio |> filter(tipo_unidad != "Sin nombre")
 ```
 
 ## 4. Datos resultantes
 
 ```{r}
-n_limpios <- nrow(hurtos)                      # registros de la base limpia (2012-2022)
-n_barrio  <- nrow(hurtos_barrio)               # con un código de barrio de la lista
-n_urbano  <- sum(por_anio$n)                   # robos en barrios urbanos (los que entran al modelo)
-n_celdas  <- nrow(por_anio)                    # observaciones barrio-año
-n_barrios <- n_distinct(por_anio$codigo_barrio)
+n_limpios  <- nrow(hurtos)                      # registros de la base limpia (2012-2022)
+n_ubicados <- nrow(hurtos_unidad)               # con una unidad de la capa
+n_modelo   <- sum(por_anio$n)                   # robos que entran al modelo
+n_celdas   <- nrow(por_anio)                    # observaciones unidad-año
+n_unidades <- n_distinct(por_anio$codigo_barrio)
 ```
 
-| Etapa                            | Robos                                 |
-|----------------------------------|---------------------------------------|
-| Base limpia (2012–2022)          | `r format(n_limpios, big.mark = " ")` |
-| Con código de barrio de la lista | `r format(n_barrio, big.mark = " ")`  |
-| Solo zona urbana                 | `r format(n_urbano, big.mark = " ")`  |
+| Etapa                           | Robos                                  |
+|---------------------------------|----------------------------------------|
+| Base limpia (2012–2022)         | `r format(n_limpios, big.mark = " ")`  |
+| Con una unidad de la capa       | `r format(n_ubicados, big.mark = " ")` |
+| En la tabla de análisis         | `r format(n_modelo, big.mark = " ")`   |
 
-La tabla de análisis tiene `r format(n_celdas, big.mark = " ")` observaciones: `r n_barrios` barrios urbanos durante 11 años. Conserva el `r round(n_urbano / n_limpios * 100, 1)` % de los robos de la base limpia. La mayor parte de lo que se pierde son registros sin código de barrio (zonas institucionales, áreas de expansión y faltantes), que se revisarán al cruzar con la capa de barrios.
+La tabla de análisis tiene `r format(n_celdas, big.mark = " ")` observaciones: `r n_unidades` unidades durante 11 años. Conserva el `r round(n_modelo / n_limpios * 100, 1)` % de los robos de la base limpia; solo se pierden los registros sin ubicación.
 
 ```{r}
 write.csv(por_anio, here("datos", "procesados", "conteos_barrio_anio.csv"), row.names = FALSE)

@@ -1,95 +1,167 @@
 ---
-title: "03_estrato.qmd"
-format: html
+title: "Estrato por unidad"
+subtitle: "Trabajo final: Estadística Bayesiana"
+format:
+  html:
+    toc: true
+    code-fold: show
+    embed-resources: true
 editor: visual
+execute:
+  warning: false
+  message: false
 ---
 
+**Entradas:** `datos/procesados/conteos_barrio_anio.csv`, `datos/crudos/estrato_por_unidad.csv` y `datos/crudos/estratos.json` (este último solo para validar)
+
+**Salida:** `datos/procesados/tabla_analisis.csv`
+
 ```{r}
+#| include: false
 library(dplyr)
 library(here)
+```
 
+```{r}
 conteos <- read.csv(here("datos", "procesados", "conteos_barrio_anio.csv"),
                     colClasses = c(codigo_barrio = "character"))
 
-estratos <- jsonlite::fromJSON(here("datos", "crudos", "estratos.json"))$features$attributes
-head(estratos, 10)   # una fila por barrio y estrato: cuántas manzanas de ese estrato tiene el barrio
+estrato_unidad <- read.csv(here("datos", "crudos", "estrato_por_unidad.csv"),
+                           colClasses = c(codigo = "character"))
+head(estrato_unidad, 10)   # una fila por unidad y estrato: cuántas manzanas de ese estrato tiene la unidad
 ```
 
-## 1. ¿Cómo asignar un estrato a cada barrio?
+## 0. Fuente del estrato
 
-**Pregunta:** el estrato se asigna a cada manzana, no al barrio. Si un barrio tiene manzanas de varios estratos, ¿un solo número lo representa bien?
+El estrato se asigna a cada manzana. Para saber cuántas manzanas de cada estrato tiene cada unidad, se consultó la capa "Estrato Socioeconómico" del catastro de Medellín (servidor de mapas de la Alcaldía), enviando el polígono de cada una de las `r n_distinct(estrato_unidad$codigo)` unidades de la capa de barrios y contando las manzanas que quedan completamente dentro de él, agrupadas por estrato. La consulta se hizo el 23 de noviembre de 2026. Las unidades sin manzanas residenciales aparecen con estrato vacío y 0 manzanas.
+
+**Pregunta:** ¿esta consulta espacial reproduce el estrato que asigna el propio catastro a cada barrio?
 
 ```{r}
-estratos_urbanos <- estratos |>
-  filter(codigo_barrio %in% conteos$codigo_barrio) |>     # solo los barrios urbanos de la tabla de análisis
-  group_by(codigo_barrio) |>
-  mutate(prop = n_manzanas / sum(n_manzanas)) |>          # proporción de manzanas de cada estrato en el barrio
-  arrange(desc(prop), .by_group = TRUE) |>                # dentro de cada barrio, de mayor a menor proporción
+moda <- function(df, cod) {               # estrato con más manzanas en cada unidad
+  df |>
+    filter(!is.na(estrato)) |>
+    group_by({{ cod }}) |>
+    arrange(desc(n_manzanas), .by_group = TRUE) |>
+    summarise(moda = estrato[1], .groups = "drop")
+}
+
+estratos_catastro <- jsonlite::fromJSON(here("datos", "crudos", "estratos.json"))$features$attributes  # estrato por código catastral de barrio
+
+validacion <- inner_join(moda(estrato_unidad, codigo),
+                         moda(estratos_catastro, codigo_barrio),
+                         by = c("codigo" = "codigo_barrio"), suffix = c("_consulta", "_catastro")) |>
+  filter(grepl("^(0[1-9]|1[0-6])", codigo))   # barrios urbanos
+
+mean(validacion$moda_consulta == validacion$moda_catastro)   # proporción de barrios con el mismo estrato moda
+```
+
+**Evidencia:** en los `r nrow(validacion)` barrios urbanos que aparecen en ambas fuentes, el estrato moda coincide en el `r round(mean(validacion$moda_consulta == validacion$moda_catastro) * 100, 1)` % de los casos. Las pocas diferencias se dan en barrios donde los dos estratos más frecuentes están casi empatados.
+
+**Decisión:** usar la consulta espacial para todas las unidades. Reproduce el estrato del catastro en los barrios y permite asignarlo también a las cabeceras de corregimiento, las áreas de expansión y las veredas, que no aparecen con su código en el catastro.
+
+## 1. Unidades sin vivienda
+
+**Pregunta:** el estrato clasifica viviendas. ¿Qué hacer con las unidades donde no hay vivienda?
+
+```{r}
+manzanas_unidad <- estrato_unidad |>
+  group_by(codigo) |>
+  summarise(n_manzanas = sum(n_manzanas), .groups = "drop")
+
+manzanas_unidad |> filter(n_manzanas == 0)                  # unidades sin ninguna manzana residencial
+manzanas_unidad |> filter(grepl("^Inst", codigo))           # manzanas residenciales en las zonas institucionales
+```
+
+**Evidencia:** `r sum(manzanas_unidad$n_manzanas == 0)` unidades no tienen ninguna manzana residencial, entre ellas varias zonas institucionales y dos unidades con código de barrio que en realidad son instalaciones (el sector de la Facultad de Minas y el Batallón Girardot). Otras zonas institucionales tienen unas pocas manzanas residenciales en sus bordes, y una de ellas devuelve un número de manzanas imposible para su tamaño, señal de un problema en su polígono.
+
+**Decisión:** asignar la categoría **"No residencial"** a todas las zonas institucionales, por definición, y a cualquier otra unidad sin manzanas residenciales. Asignarles un estrato (por ejemplo, el de sus vecinos) les atribuiría una característica de la población residente que no tienen.
+
+```{r}
+no_residencial <- union(manzanas_unidad$codigo[manzanas_unidad$n_manzanas == 0],
+                        manzanas_unidad$codigo[grepl("^Inst", manzanas_unidad$codigo)])
+length(no_residencial)
+```
+
+## 2. ¿Cómo asignar un estrato a cada unidad residencial?
+
+**Pregunta:** si una unidad tiene manzanas de varios estratos, ¿un solo número la representa bien?
+
+```{r}
+estratos_residenciales <- estrato_unidad |>
+  filter(!codigo %in% no_residencial, !is.na(estrato)) |>
+  group_by(codigo) |>
+  mutate(prop = n_manzanas / sum(n_manzanas)) |>          # proporción de manzanas de cada estrato en la unidad
+  arrange(desc(prop), .by_group = TRUE) |>                # dentro de cada unidad, de mayor a menor proporción
   ungroup()
 
-estrato_barrio <- estratos_urbanos |>
-  group_by(codigo_barrio) |>
-  summarise(estrato_moda  = estrato[1],                          # estrato con más manzanas (el primero tras ordenar)
+estrato_residencial <- estratos_residenciales |>
+  group_by(codigo) |>
+  summarise(estrato_moda  = as.character(estrato[1]),            # estrato con más manzanas (el primero tras ordenar)
             prop_moda     = prop[1],                             # qué tan dominante es ese estrato
             diferencia    = ifelse(n() > 1, prop[1] - prop[2], 1),  # ventaja sobre el segundo; 1 si hay un solo estrato
-            n_estratos    = n(),                                 # cuántos estratos distintos tiene el barrio
+            n_estratos    = n(),                                 # cuántos estratos distintos tiene la unidad
             estrato_medio = weighted.mean(estrato, n_manzanas),  # promedio ponderado por manzanas
             n_manzanas    = sum(n_manzanas),
             .groups = "drop")
 
-table(estrato_barrio$n_estratos)     # cuántos barrios tienen 1, 2, 3... estratos distintos
-summary(estrato_barrio$prop_moda)    # qué proporción de manzanas reúne el estrato más frecuente
+table(estrato_residencial$n_estratos)     # cuántas unidades tienen 1, 2, 3... estratos distintos
+summary(estrato_residencial$prop_moda)    # qué proporción de manzanas reúne el estrato más frecuente
 ```
 
 ```{r}
-n_barrios    <- nrow(estrato_barrio)
-n_un_estrato <- sum(estrato_barrio$n_estratos == 1)
-n_empate     <- sum(estrato_barrio$diferencia < 0.1)
+#| include: false
+n_res        <- nrow(estrato_residencial)
+n_un_estrato <- sum(estrato_residencial$n_estratos == 1)
+n_empate     <- sum(estrato_residencial$diferencia < 0.1)
 ```
 
 **Evidencia:**
 
-- Solo `r n_un_estrato` de los `r n_barrios` barrios (`r round(n_un_estrato / n_barrios * 100, 1)` %) tienen un único estrato: la mayoría son mixtos.
-- Aun así, en el barrio típico el estrato más frecuente reúne el `r round(median(estrato_barrio$prop_moda) * 100)` % de las manzanas.
-- Solo en `r n_empate` barrios (`r round(n_empate / n_barrios * 100, 1)` %) el estrato más frecuente le gana al segundo por menos de 10 puntos porcentuales. En casi todos hay un estrato que domina con claridad.
+- Solo `r n_un_estrato` de las `r n_res` unidades residenciales (`r round(n_un_estrato / n_res * 100, 1)` %) tienen un único estrato: la mayoría son mixtas.
+- Aun así, en la unidad típica el estrato más frecuente reúne el `r round(median(estrato_residencial$prop_moda) * 100)` % de las manzanas.
+- Solo en `r n_empate` unidades (`r round(n_empate / n_res * 100, 1)` %) el estrato más frecuente le gana al segundo por menos de 10 puntos porcentuales. En la gran mayoría hay un estrato que domina con claridad.
 
-**Decisión:** asignar a cada barrio su **estrato moda** (el estrato con más manzanas) como covariable principal. Es la medida más interpretable ("barrios de estrato 3") y permite ver relaciones no monótonas con el número de robos. Como análisis de sensibilidad se usará el **estrato medio** ponderado por manzanas, que recoge la mezcla de estratos; ambas medidas están muy alineadas (correlación de `r round(cor(estrato_barrio$estrato_moda, estrato_barrio$estrato_medio), 2)`).
+**Decisión:** asignar a cada unidad residencial su **estrato moda** (el estrato con más manzanas) como covariable principal. Es la medida más interpretable ("barrios de estrato 3") y permite ver relaciones no monótonas con el número de robos. Como análisis de sensibilidad se usará el **estrato medio** ponderado por manzanas, que recoge la mezcla de estratos; ambas medidas están muy alineadas (correlación de `r round(cor(as.numeric(estrato_residencial$estrato_moda), estrato_residencial$estrato_medio), 2)`).
 
-Así quedan distribuidos los barrios según su estrato moda:
-
-```{r}
-table(estrato_barrio$estrato_moda)
-```
-## 2. Unir el estrato a los conteos
-
-**Pregunta:** ¿todos los barrios de la tabla de análisis quedan con un estrato asignado?
+## 3. Unir el estrato a los conteos
 
 ```{r}
+estrato_final <- bind_rows(
+  estrato_residencial,
+  tibble(codigo = no_residencial, estrato_moda = "No residencial", n_manzanas = 0)
+)
+
 tabla_analisis <- conteos |>
-  left_join(estrato_barrio, by = "codigo_barrio")    # agrega a cada fila barrio-año las columnas de estrato del barrio
+  left_join(estrato_final, by = c("codigo_barrio" = "codigo"))   # agrega a cada fila unidad-año el estrato de la unidad
 
-sum(is.na(tabla_analisis$estrato_moda))              # barrios sin estrato: debería ser 0
-n_distinct(tabla_analisis$codigo_barrio)             # 265 barrios
+sum(is.na(tabla_analisis$estrato_moda))              # unidades sin estrato: debería ser 0
+table(tabla_analisis$estrato_moda[tabla_analisis$anio == 2012])   # unidades por estrato
 ```
 
-**Evidencia:** los `r n_distinct(tabla_analisis$codigo_barrio)` barrios urbanos tienen estrato asignado (`r sum(is.na(tabla_analisis$estrato_moda))` sin estrato).
+**Evidencia:** las `r n_distinct(tabla_analisis$codigo_barrio)` unidades quedan con estrato asignado (`r sum(is.na(tabla_analisis$estrato_moda))` sin estrato).
 
 **Primera mirada a la relación con los robos:**
 
 ```{r}
 robos_estrato <- tabla_analisis |>
   group_by(estrato_moda) |>
-  summarise(barrios  = n_distinct(codigo_barrio),
-            media    = mean(n),                      # robos promedio por barrio-año
-            desviacion_std = sqrt(var(n)),
+  summarise(unidades = n_distinct(codigo_barrio),
+            media    = mean(n),                      # robos promedio por unidad-año
+            varianza = var(n),
             .groups = "drop")
 robos_estrato
 ```
 
-Dos patrones que adelantan el análisis:
+```{r}
+#| include: false
+media_e <- function(e) round(robos_estrato$media[robos_estrato$estrato_moda == e], 1)
+```
 
-- Los robos no crecen ni decrecen con el estrato: suben hasta los estratos 3 y 4 (unos 25 robos por barrio-año) y caen en los extremos (`r round(robos_estrato$media[1], 1)` en estrato 1 y `r round(robos_estrato$media[6], 1)` en estrato 6). La relación parece tener forma de U invertida.
-- En todos los estratos la varianza es mucho mayor que la media, lo que anticipa que un modelo Poisson se quedará corto.
+Dos patrones dan una primera impresión de qué esperar:
+
+- Los robos no crecen ni decrecen con el estrato: suben hasta los estratos medios y caen en los extremos (`r media_e("1")` robos por unidad-año en estrato 1, `r media_e("3")` en estrato 3 y `r media_e("6")` en estrato 6). La relación parece tener forma de U invertida. Las zonas no residenciales tienen en promedio `r media_e("No residencial")` robos por año.
+- En todos los grupos la varianza es bastante alta comparada con la media, lo que anticipa que un modelo Poisson (que supone que la varianza de los conteos es igual a su media) se quedará corto.
 
 ```{r}
 write.csv(tabla_analisis, here("datos", "procesados", "tabla_analisis.csv"), row.names = FALSE)
