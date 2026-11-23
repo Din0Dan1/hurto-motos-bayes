@@ -5,4 +5,7 @@
 datos/crudos/
 datos/procesados/
 Claude outputs/
+*.html
+*_files/
+.quarto/
 *.rds
