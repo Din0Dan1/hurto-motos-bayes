@@ -122,7 +122,7 @@ n_empate     <- sum(estrato_residencial$diferencia < 0.1)
 - Aun así, en la unidad típica el estrato más frecuente reúne el `r round(median(estrato_residencial$prop_moda) * 100)` % de las manzanas.
 - Solo en `r n_empate` unidades (`r round(n_empate / n_res * 100, 1)` %) el estrato más frecuente le gana al segundo por menos de 10 puntos porcentuales. En la gran mayoría hay un estrato que domina con claridad.
 
-**Decisión:** asignar a cada unidad residencial su **estrato moda** (el estrato con más manzanas) como covariable principal. Es la medida más interpretable ("barrios de estrato 3") y permite ver relaciones no monótonas con el número de robos. Como análisis de sensibilidad se usará el **estrato medio** ponderado por manzanas, que recoge la mezcla de estratos; ambas medidas están muy alineadas (correlación de `r round(cor(as.numeric(estrato_residencial$estrato_moda), estrato_residencial$estrato_medio), 2)`).
+**Decisión:** asignar a cada unidad residencial su **estrato moda** (el estrato con más manzanas) como covariable principal. Es la medida más interpretable ("barrios de estrato 3") y permite ver relaciones no monótonas con el número de robos. El estrato medio ponderado por manzanas, que recoge la mezcla de estratos, se conserva en la tabla como alternativa; ambas medidas están muy alineadas (correlación de `r round(cor(as.numeric(estrato_residencial$estrato_moda), estrato_residencial$estrato_medio), 2)`).
 
 ## 3. Unir el estrato a los conteos
 

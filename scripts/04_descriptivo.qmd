@@ -1,0 +1,307 @@
+---
+title: "Análisis descriptivo"
+subtitle: "Trabajo final: Estadística Bayesiana"
+format:
+  html:
+    toc: true
+    code-fold: show
+    embed-resources: true
+editor: visual
+execute:
+  warning: false
+  message: false
+---
+
+**Entradas:** `datos/procesados/hurtos_limpio.csv`, `datos/procesados/tabla_analisis.csv` y `datos/crudos/barrios.geojson`
+
+```{r}
+#| include: false
+library(dplyr)
+library(ggplot2)
+library(here)
+```
+
+```{r}
+hurtos <- read.csv(here("datos", "procesados", "hurtos_limpio.csv"),
+                   colClasses = c(codigo_barrio = "character"))           # un registro por robo
+tabla  <- read.csv(here("datos", "procesados", "tabla_analisis.csv"),
+                   colClasses = c(codigo_barrio = "character", estrato_moda = "character"))  # una fila por unidad-año
+capa   <- jsonlite::fromJSON(here("datos", "crudos", "barrios.geojson"))$features$properties |>
+  select(codigo, nombre, comuna = nombre_comuna_corregimiento)             # nombre y comuna de cada unidad
+```
+
+```{r}
+#| include: false
+theme_set(theme_minimal())   # estilo limpio para todos los gráficos del documento
+```
+
+## 1. Evolución en el tiempo
+
+**Pregunta:** ¿cómo ha cambiado el número de robos de moto en Medellín entre 2012 y 2022?
+
+```{r}
+por_anio <- hurtos |> count(anio)                    # robos por año en toda la ciudad
+
+ggplot(por_anio, aes(x = anio, y = n)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = 2012:2022) +           # una marca por año en el eje x
+  labs(x = "Año", y = "Robos de moto",
+       title = "Robos de moto por año en Medellín, 2012-2022")
+```
+
+```{r}
+#| include: false
+n_2019 <- por_anio$n[por_anio$anio == 2019]
+n_2020 <- por_anio$n[por_anio$anio == 2020]
+```
+
+En el periodo se registraron `r format(nrow(hurtos), big.mark = " ")` robos de moto, entre `r format(min(por_anio$n), big.mark = " ")` y `r format(max(por_anio$n), big.mark = " ")` por año, sin una tendencia clara de aumento o disminución. Se destaca la caída de 2020: `r format(n_2020, big.mark = " ")` robos frente a `r format(n_2019, big.mark = " ")` en 2019 (`r round((n_2020 / n_2019 - 1) * 100, 1)` %), coherente con las restricciones de movilidad de la pandemia.
+
+## 2. Perfil del robo
+
+### Con y sin violencia
+
+```{r}
+violencia_anio <- hurtos |>
+  filter(!is.na(violencia)) |>
+  count(anio, violencia) |>
+  group_by(anio) |>
+  mutate(pct = n / sum(n) * 100) |>                   # % de cada tipo dentro de cada año
+  ungroup()
+
+ggplot(violencia_anio, aes(x = anio, y = pct, fill = violencia)) +
+  geom_col() +                                        # barras apiladas que suman 100 % cada año
+  scale_x_continuous(breaks = 2012:2022) +
+  labs(x = "Año", y = "% de los robos", fill = NULL,
+       title = "Composición de los robos de moto según violencia")
+```
+
+```{r}
+#| include: false
+pct_con <- function(a) violencia_anio |> filter(anio == a, violencia == "Con violencia") |> pull(pct)
+```
+
+La composición del robo cambió por completo en el periodo: los robos con violencia pasaron del `r round(pct_con(2012), 1)` % en 2012 al `r round(pct_con(2022), 1)` % en 2022. Hoy la gran mayoría de las motos se roban estacionadas y sin el dueño presente.
+
+### Víctimas
+
+```{r}
+pct_hombres <- round(mean(hurtos$sexo == "Hombre", na.rm = TRUE) * 100, 1)
+
+ggplot(hurtos, aes(x = edad)) +
+  geom_histogram(binwidth = 2) +                      # barras de 2 años de ancho
+  labs(x = "Edad de la víctima", y = "Robos",
+       title = "Edad de las víctimas")
+```
+
+El `r pct_hombres` % de las víctimas son hombres. La mitad tiene entre `r quantile(hurtos$edad, 0.25, na.rm = TRUE)` y `r quantile(hurtos$edad, 0.75, na.rm = TRUE)` años (mediana: `r median(hurtos$edad, na.rm = TRUE)`).
+
+### La moto
+
+```{r}
+hurtos <- hurtos |>
+  mutate(antiguedad = pmax(anio - modelo, 0))         # años de uso; el modelo del año siguiente cuenta como 0
+
+ggplot(filter(hurtos, !is.na(antiguedad)), aes(x = antiguedad)) +
+  geom_histogram(binwidth = 1) +
+  coord_cartesian(xlim = c(0, 30)) +                  # muestra hasta 30 años de antigüedad
+  labs(x = "Antigüedad de la moto (años)", y = "Robos",
+       title = "Antigüedad de las motos robadas")
+```
+
+Las motos robadas suelen ser recientes: la mitad tiene `r median(hurtos$antiguedad, na.rm = TRUE)` años o menos. Este dato debe leerse con cautela, porque el modelo falta en cerca del 30 % de los registros.
+
+## 3. Distribución entre unidades
+
+**Pregunta:** ¿los robos se reparten de forma pareja entre las unidades o se concentran en unas pocas?
+
+```{r}
+total_unidad <- tabla |>
+  group_by(codigo_barrio, estrato_moda) |>
+  summarise(total = sum(n), .groups = "drop") |>   # robos de cada unidad en los 11 años
+  left_join(capa, by = c("codigo_barrio" = "codigo")) |>
+  arrange(desc(total))                             # de mayor a menor
+
+total_unidad <- total_unidad |>
+  mutate(pct_acumulado = cumsum(total) / sum(total) * 100)   # % del total que suman las unidades hasta esa fila
+
+n_mitad   <- which(total_unidad$pct_acumulado >= 50)[1]       # cuántas unidades reúnen la mitad de los robos
+n_10pct   <- ceiling(nrow(total_unidad) * 0.10)               # cuántas unidades son el 10 % con más robos
+pct_top10 <- round(total_unidad$pct_acumulado[n_10pct], 1)    # qué % de los robos concentran
+```
+
+La distribución es muy asimétrica: la mayoría de las unidades tiene pocos robos y unas pocas tienen muchísimos. La unidad típica registró `r median(total_unidad$total)` robos en 11 años, pero la que más tiene suma `r format(max(total_unidad$total), big.mark = " ")`. El 10 % de las unidades con más robos (`r n_10pct`) concentra el `r pct_top10` % del total, y la mitad de todos los robos ocurre en solo `r n_mitad` de las `r nrow(total_unidad)` unidades.
+
+Las unidades con más robos son:
+
+```{r}
+total_unidad |>
+  select(codigo_barrio, nombre, comuna, estrato_moda, total) |>
+  slice_head(n = 10)                               # las 10 primeras
+```
+
+Por comuna y corregimiento:
+
+```{r}
+total_comuna <- total_unidad |>
+  group_by(comuna) |>
+  summarise(total = sum(total), .groups = "drop")
+
+ggplot(total_comuna, aes(x = total, y = reorder(comuna, total))) +   # ordenadas por número de robos
+  geom_col() +
+  labs(x = "Robos en 2012-2022", y = NULL,
+       title = "Robos de moto por comuna y corregimiento")
+```
+
+```{r}
+#| include: false
+pct_c10 <- round(total_comuna$total[total_comuna$comuna == "La Candelaria"] / sum(total_comuna$total) * 100, 1)
+```
+
+La comuna 10 (La Candelaria, el centro de la ciudad) concentra el `r pct_c10` % de los robos, y varias de las unidades con más robos están en ella o junto a ella. Esto sugiere que los robos ocurren donde se concentra la actividad diaria (comercio, trabajo, tránsito) y no necesariamente donde viven las víctimas; esta es una limitación de trabajar con el estrato, que describe las viviendas residenciales.
+
+### Zonas no residenciales
+
+Las zonas institucionales no tienen vivienda, pero sí muchos robos. Agrupadas por actividad:
+
+```{r}
+actividad <- c(Inst_11 = "Educación", Inst_8 = "Educación", Inst_5 = "Educación",
+               Inst_6 = "Educación", Inst_15 = "Educación",
+               Inst_9 = "Parques y zonas verdes", Inst_18 = "Parques y zonas verdes",
+               Inst_19 = "Parques y zonas verdes", Inst_10 = "Parques y zonas verdes",
+               Inst_7 = "Parques y zonas verdes",
+               Inst_16 = "Administración pública", Inst_17 = "Administración pública",
+               Inst_14 = "Deporte y eventos", Inst_1 = "Deporte y eventos",
+               Inst_4 = "Transporte", Inst_12 = "Salud",
+               Inst_2 = "Otros", Inst_3 = "Otros", Inst_20 = "Otros", Inst_13 = "Otros")
+
+robos_actividad <- total_unidad |>
+  filter(codigo_barrio %in% names(actividad)) |>
+  mutate(actividad = actividad[codigo_barrio]) |>   # busca la actividad de cada código en el vector con nombres
+  group_by(actividad) |>
+  summarise(zonas  = n(),
+            robos  = sum(total),
+            lugares = paste(nombre, collapse = ", "),
+            .groups = "drop") |>
+  arrange(desc(robos))
+
+robos_actividad
+```
+
+Las zonas educativas concentran `r robos_actividad$robos[robos_actividad$actividad == "Educación"]` robos, casi un tercio de los ocurridos en zonas institucionales. Los parques también registran muchos robos, probablemente en sus parqueaderos. En el modelo, todas estas zonas comparten la categoría "No residencial" y se diferencian por su efecto propio.
+
+## 4. Robos según estrato
+
+**Pregunta:** ¿las unidades de estrato alto tienen más o menos robos que las de estrato bajo?
+
+```{r}
+ggplot(tabla, aes(x = estrato_moda, y = n)) +   # el estrato es texto, así que ggplot ya lo trata como categoría
+  geom_boxplot() +
+  labs(x = "Estrato moda de la unidad", y = "Robos por unidad y año",
+       title = "Robos de moto por unidad y año, según estrato")
+```
+
+```{r}
+resumen_estrato <- tabla |>
+  group_by(estrato_moda) |>
+  summarise(unidades         = n_distinct(codigo_barrio),
+            mediana          = median(n),                          # robos por unidad-año, unidad típica
+            media            = mean(n),
+            por_100_manzanas = ifelse(sum(n_manzanas) > 0,
+                                      sum(n) / sum(n_manzanas) * 100, NA),  # robos al año por cada 100 manzanas
+            .groups = "drop")
+resumen_estrato
+```
+
+```{r}
+#| include: false
+med <- function(e) resumen_estrato$mediana[resumen_estrato$estrato_moda == e]
+```
+
+La relación no es monótona. La unidad típica de estrato 1 registra `r med("1")` robos al año, la de estrato 3 sube a `r med("3")`, y la de estrato 6 baja a `r med("6")`. Los robos aumentan desde los estratos bajos hasta los medios y caen en los altos: una forma de U invertida. Las zonas no residenciales registran `r med("No residencial")` robos al año en la unidad típica, aunque con unas pocas zonas (universidades, la Terminal) muy por encima.
+
+**¿Es un efecto del tamaño de la unidad?** Una unidad más grande podría tener más robos solo por tener más calles. Se revisa con la correlación entre el tamaño (número de manzanas) y los robos promedio de cada unidad residencial:
+
+```{r}
+media_unidad <- tabla |>
+  filter(estrato_moda != "No residencial") |>
+  group_by(codigo_barrio, n_manzanas) |>
+  summarise(media = mean(n), .groups = "drop")           # robos promedio por año de cada unidad
+
+cor(media_unidad$media, media_unidad$n_manzanas)
+```
+
+La correlación es baja (`r round(cor(media_unidad$media, media_unidad$n_manzanas), 2)`): el número de manzanas explica poco de cuántos robos tiene una unidad, así que no sirve como medida de exposición. Una medida más adecuada sería la población de cada unidad.
+
+## 5. Sobredispersión
+
+**Pregunta:** el modelo Poisson supone que la varianza de los conteos es igual a su media. ¿Se cumple en estos datos?
+
+Primero, entre unidades de un mismo estrato:
+
+```{r}
+dispersion_estrato <- tabla |>
+  group_by(estrato_moda) |>
+  summarise(media    = mean(n),
+            varianza = var(n),
+            razon    = varianza / media,       # 1 si se cumpliera el supuesto Poisson
+            .groups = "drop")
+dispersion_estrato
+```
+
+Luego, dentro de cada unidad, a lo largo de los 11 años:
+
+```{r}
+disp_unidad <- tabla |>
+  group_by(codigo_barrio) |>
+  summarise(media = mean(n), varianza = var(n), .groups = "drop") |>
+  filter(media > 0)                            # se excluyen las unidades sin robos (media y varianza 0)
+
+ggplot(disp_unidad, aes(x = media, y = varianza)) +
+  geom_point(alpha = 0.5) +                    # puntos semitransparentes para ver dónde se acumulan
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +   # línea varianza = media (supuesto Poisson)
+  scale_x_log10() +
+  scale_y_log10() +                            # escala logarítmica
+  labs(x = "Media de robos por año", y = "Varianza de robos por año",
+       title = "Media y varianza de los robos en cada unidad")
+```
+
+```{r}
+#| include: false
+pct_sobre <- round(mean(disp_unidad$varianza > disp_unidad$media) * 100, 1)
+razon_med <- round(median(disp_unidad$varianza / disp_unidad$media), 1)
+```
+
+**Evidencia:**
+
+- Entre unidades de un mismo estrato, la varianza es entre `r round(min(dispersion_estrato$razon), 1)` y `r round(max(dispersion_estrato$razon), 1)` veces la media. Esta dispersión refleja, en buena parte, que las unidades de un mismo estrato son muy distintas entre sí.
+- Incluso dentro de una misma unidad, de un año a otro, la varianza supera a la media en el `r pct_sobre` % de las unidades, y en la unidad típica es `r razon_med` veces la media. En el gráfico, casi todos los puntos quedan por encima de la línea punteada.
+
+La varianza es mayor que la media en los dos niveles. Esto anticipa que un modelo Poisson subestimará la incertidumbre, y justifica usar una verosimilitud Binomial Negativa. Además, la diferencia entre los dos niveles sugiere que una parte de la variación se debe a diferencias persistentes entre unidades, que un modelo jerárquico o espacial puede capturar.
+
+## 6. Distribución espacial
+
+```{r}
+library(sf)
+
+resumen_unidad <- tabla |>
+  group_by(codigo_barrio, tipo_unidad, zona, estrato_moda) |>
+  summarise(robos_total = sum(n),                   # robos 2012-2022
+            robos_anual = mean(n),                  # robos promedio por año
+            .groups = "drop")
+
+capa_sf <- st_read(here("datos", "crudos", "barrios.geojson"), quiet = TRUE)   # capa con geometría
+
+mapa <- capa_sf |>
+  inner_join(resumen_unidad, by = c("codigo" = "codigo_barrio"))   # une polígonos y conteos por código
+
+st_write(mapa, here("resultados", "mapa_robos.gpkg"), delete_dsn = TRUE, quiet = TRUE)
+```
+
+```{r}
+#| fig-cap: "Izquierda: robos de moto promedio por año. Derecha: estrato moda. Fuente: MEData y Alcaldía de Medellín, 2012-2022."
+knitr::include_graphics(here("resultados", "figuras", "RobosAniovs_estratos.png"))
+```
+Como habíamos observado previamente, los hurtos se concentran en la zona urbana, particularmente en el centro (la comuna de La Candelaria). Generalmente las zonas de tonos más oscuros en el mapa de hurtos corresponden a barrios de estrato 3 y 4, al mismo tiempo que en lo general, hay tonos claros en barrios de estrato 1 y 6. Se destacan también zonas periféricas como Pajarito y la cabecera de San Antonio de Prado, que a pesar de pertenecer a corregimientos presentan un conteo de hurtos alto.
+

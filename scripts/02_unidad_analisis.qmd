@@ -137,11 +137,11 @@ n_celdas   <- nrow(por_anio)                    # observaciones unidad-año
 n_unidades <- n_distinct(por_anio$codigo_barrio)
 ```
 
-| Etapa                           | Robos                                  |
-|---------------------------------|----------------------------------------|
-| Base limpia (2012–2022)         | `r format(n_limpios, big.mark = " ")`  |
-| Con una unidad de la capa       | `r format(n_ubicados, big.mark = " ")` |
-| En la tabla de análisis         | `r format(n_modelo, big.mark = " ")`   |
+| Etapa                     | Robos                                  |
+|---------------------------|----------------------------------------|
+| Base limpia (2012–2022)   | `r format(n_limpios, big.mark = " ")`  |
+| Con una unidad de la capa | `r format(n_ubicados, big.mark = " ")` |
+| En la tabla de análisis   | `r format(n_modelo, big.mark = " ")`   |
 
 La tabla de análisis tiene `r format(n_celdas, big.mark = " ")` observaciones: `r n_unidades` unidades durante 11 años. Conserva el `r round(n_modelo / n_limpios * 100, 1)` % de los robos de la base limpia; solo se pierden los registros sin ubicación.
 

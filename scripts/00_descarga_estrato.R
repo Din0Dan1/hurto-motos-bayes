@@ -15,14 +15,23 @@ capa_estrato  <- "https://www.medellin.gov.co/servidormapas/rest/services/vivien
 
 
 # ---- 1. Capa de barrios y veredas (GeoJSON, MAGNA-SIRGAS geográfico) ----
-resp_capa <- GET(paste0(capa_unidades, "/query"),
-                 query = list(where = "1=1",
-                              outFields = "codigo,nombre,nombre_comuna_corregimiento,subtipo_barriovereda",
-                              returnGeometry = "true", outSR = "4686", f = "geojson"))
-stop_for_status(resp_capa)                                   # detiene el script si el servidor responde con error
-writeBin(content(resp_capa, as = "raw"), here("datos", "crudos", "barrios.geojson"))
+descargar_capa <- function(intentos = 3) {
+  for (i in seq_len(intentos)) {
+    resp <- GET(paste0(capa_unidades, "/query"),
+                query = list(where = "1=1",
+                             outFields = "codigo,nombre,nombre_comuna_corregimiento,subtipo_barriovereda",
+                             returnGeometry = "true", outSR = "4686", f = "geojson"))
+    texto <- content(resp, as = "text", encoding = "UTF-8")
+    capa  <- tryCatch(fromJSON(texto, simplifyVector = FALSE), error = function(e) NULL)
+    if (!is.null(capa) && length(capa$features) > 0) return(texto)   # respuesta válida: tiene unidades
+    message("Intento ", i, " fallido; el servidor respondió: ", substr(texto, 1, 150))
+    Sys.sleep(3)                                                      # espera antes de reintentar
+  }
+  stop("No se pudo descargar la capa de barrios; el archivo existente no se modificó.")
+}
 
-
+texto_capa <- descargar_capa()
+writeLines(texto_capa, here("datos", "crudos", "barrios.geojson"), useBytes = TRUE)
 # ---- 2. Estrato: manzanas por estrato dentro de cada unidad ----
 # Polígonos de todas las unidades, en el sistema de coordenadas original de la capa
 resp_unid <- GET(paste0(capa_unidades, "/query"),
