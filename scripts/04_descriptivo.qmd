@@ -19,6 +19,9 @@ execute:
 library(dplyr)
 library(ggplot2)
 library(here)
+library(sf)      # datos geográficos
+library(spdep)   # vecindad entre unidades e índice de Moran
+
 ```
 
 ```{r}
@@ -283,8 +286,6 @@ La varianza es mayor que la media en los dos niveles. Esto anticipa que un model
 ## 6. Distribución espacial
 
 ```{r}
-library(sf)
-
 resumen_unidad <- tabla |>
   group_by(codigo_barrio, tipo_unidad, zona, estrato_moda) |>
   summarise(robos_total = sum(n),                   # robos 2012-2022
@@ -303,5 +304,78 @@ st_write(mapa, here("resultados", "mapa_robos.gpkg"), delete_dsn = TRUE, quiet =
 #| fig-cap: "Izquierda: robos de moto promedio por año. Derecha: estrato moda. Fuente: MEData y Alcaldía de Medellín, 2012-2022."
 knitr::include_graphics(here("resultados", "figuras", "RobosAniovs_estratos.png"))
 ```
+
 Como habíamos observado previamente, los hurtos se concentran en la zona urbana, particularmente en el centro (la comuna de La Candelaria). Generalmente las zonas de tonos más oscuros en el mapa de hurtos corresponden a barrios de estrato 3 y 4, al mismo tiempo que en lo general, hay tonos claros en barrios de estrato 1 y 6. Se destacan también zonas periféricas como Pajarito y la cabecera de San Antonio de Prado, que a pesar de pertenecer a corregimientos presentan un conteo de hurtos alto.
 
+## 7. Dependencia espacial
+
+**Pregunta:** ¿las unidades con muchos robos están cerca de otras con muchos robos? ¿Y se mantiene ese patrón una vez se tiene en cuenta el estrato?
+
+Para responderla se usa el **índice de Moran**, que mide si las unidades vecinas se parecen entre sí más de lo que se esperaría si los valores estuvieran repartidos al azar en el mapa. Funciona como una correlación entre el valor de cada unidad y el de sus vecinas: es positivo cuando los valores altos están junto a valores altos y los bajos junto a bajos, cercano a 0 cuando no hay patrón espacial, y negativo cuando los vecinos tienden a ser opuestos. La prueba asociada compara el índice observado con el que se obtendría si los valores se repartieran al azar entre las unidades.
+
+Primero hay que definir quién es vecino de quién:
+
+```{r}
+sf_use_s2(FALSE)                                    # vecindad con geometría plana (coordenadas en grados)
+
+mapa <- mapa |> arrange(codigo)                     # orden fijo: la fila i del mapa es la unidad i de la matriz
+vecinos <- poly2nb(mapa, queen = TRUE)              # vecinas: unidades que comparten un borde o una esquina
+pesos   <- nb2listw(vecinos, style = "W")           # pesos: cada vecina pesa 1 / número de vecinas
+
+summary(card(vecinos))                              # cuántas vecinas tiene cada unidad
+sum(card(vecinos) == 0)                             # unidades sin vecinas ("islas")
+```
+Por ejemplo: observemos los vecinos de barrio Prado (con código 1001):
+
+```{r}
+i <- which(mapa$codigo == "1001")   # 1. busca en qué fila del mapa está Prado
+mapa$nombre[vecinos[[i]]]           # 2. muestra los nombres de sus vecinos
+```
+
+
+Se consideran vecinas las unidades que comparten un borde o una esquina. Cada unidad tiene entre `r min(card(vecinos))` y `r max(card(vecinos))` vecinas (`r median(card(vecinos))` en la unidad típica), y `r sum(card(vecinos) == 0)` quedan aisladas: la ciudad forma una sola red conectada. Esta misma vecindad se usará en el modelo espacial.
+
+**Índice de Moran de los robos:**
+
+```{r}
+moran_robos <- moran.test(log1p(mapa$robos_anual), pesos)   # log(1 + x): suaviza la asimetría y admite ceros
+moran_robos
+```
+
+El índice es `r round(moran_robos$estimate[1], 2)` (valor *p* < 0.001): las unidades con muchos robos tienden a estar junto a otras con muchos robos, como se ve en el mapa.
+
+**¿Se debe al estrato?** Los estratos también están agrupados en el espacio (El Poblado, por ejemplo, es un bloque continuo de estrato 6). Si el estrato explicara los robos, estos aparecerían agrupados aunque no hubiera ningún efecto espacial propio. Para descartarlo, se calcula el índice sobre los residuos (se leresta a cada unidad el promedio de su estrato) de una regresión simple de los robos según el estrato y la zona, es decir, sobre la parte de los robos que el estrato y la zona no explican:
+
+```{r}
+residuos <- resid(lm(log1p(robos_anual) ~ estrato_moda + zona, data = mapa))  # lo que no explican estrato y zona
+moran_residuos <- moran.test(residuos, pesos)
+moran_residuos
+```
+
+El índice sobre los residuos baja a `r round(moran_residuos$estimate[1], 2)`, pero sigue siendo positivo y significativo (valor *p* = `r format.pval(moran_residuos$p.value, digits = 2)`). El estrato explica una parte del agrupamiento, pero no todo: queda una estructura espacial adicional, posiblemente asociada a la cercanía al centro o a las vías principales. Esto motiva incluir un efecto espacial en el modelo.
+
+## 8. Preguntas de investigación
+
+El análisis descriptivo deja cuatro hallazgos:
+
+- **Forma de U por estrato.** Las unidades de estrato 3 y 4 son las que más
+  robos tienen en promedio; las de estrato 1 y 6, las que menos. Son conteos,
+  no tasas: parte de la diferencia puede venir del tamaño de cada unidad.
+- **Concentración.** La mitad de los robos ocurre en 58 de las 330 unidades,
+  sobre todo en el centro.
+- **Sobredispersión.** La varianza de los conteos es mucho mayor que su media,
+  así que un modelo Poisson no es adecuado; usaremos la Binomial Negativa.
+- **Dependencia espacial.** Las unidades vecinas tienen conteos parecidos
+  (I de Moran = `r round(moran_robos$estimate[1], 2)`). Después de quitar
+  el efecto del estrato y la zona, el parecido baja a
+  `r round(moran_residuos$estimate[1], 2)`, pero no desaparece.
+
+A partir de esto planteamos dos preguntas: (Reformular)
+
+1. **¿Cómo cambia el número de robos de moto por unidad según el estrato?**
+   Con un modelo Binomial Negativo jerárquico, estimaremos el efecto de cada
+   estrato y calcularemos probabilidades a posteriori como
+   $P(\text{robos}_{e3} > \text{robos}_{e6} \mid y)$.
+2. **¿Queda una estructura espacial que el estrato no explica?** Agregaremos
+   un efecto espacial BYM2 (INLA) y veremos qué parte de la variación entre
+   unidades es espacial.
