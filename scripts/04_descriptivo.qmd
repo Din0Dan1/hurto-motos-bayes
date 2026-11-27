@@ -28,7 +28,7 @@ library(spdep)   # vecindad entre unidades e índice de Moran
 hurtos <- read.csv(here("datos", "procesados", "hurtos_limpio.csv"),
                    colClasses = c(codigo_barrio = "character"))           # un registro por robo
 tabla  <- read.csv(here("datos", "procesados", "tabla_analisis.csv"),
-                   colClasses = c(codigo_barrio = "character", estrato_moda = "character"))  # una fila por unidad-año
+                   colClasses = c(codigo_barrio = "character", estrato_moda = "character", estrato_modelo = "character"))  # una fila por unidad-año
 capa   <- jsonlite::fromJSON(here("datos", "crudos", "barrios.geojson"))$features$properties |>
   select(codigo, nombre, comuna = nombre_comuna_corregimiento)             # nombre y comuna de cada unidad
 ```
@@ -217,15 +217,15 @@ Las zonas educativas concentran `r robos_actividad$robos[robos_actividad$activid
 **Pregunta:** ¿las unidades de estrato alto tienen más o menos robos que las de estrato bajo?
 
 ```{r}
-ggplot(tabla, aes(x = estrato_moda, y = n)) +   # el estrato es texto, así que ggplot ya lo trata como categoría
+ggplot(tabla, aes(x = estrato_modelo, y = n)) +   # el estrato es texto, así que ggplot ya lo trata como categoría
   geom_boxplot() +
-  labs(x = "Estrato moda de la unidad", y = "Robos por unidad y año",
+  labs(x = "Estrato moda de la unidad (veredas aparte)", y = "Robos por unidad y año",
        title = "Robos de moto por unidad y año, según estrato")
 ```
 
 ```{r}
 resumen_estrato <- tabla |>
-  group_by(estrato_moda) |>
+  group_by(estrato_modelo) |>
   summarise(unidades         = n_distinct(codigo_barrio),
             mediana          = median(n),                          # robos por unidad-año, unidad típica
             media            = mean(n),
@@ -237,16 +237,16 @@ resumen_estrato
 
 ```{r}
 #| include: false
-med <- function(e) resumen_estrato$mediana[resumen_estrato$estrato_moda == e]
+med <- function(e) resumen_estrato$mediana[resumen_estrato$estrato_modelo == e]
 ```
 
-La relación no es monótona. La unidad típica de estrato 1 registra `r med("1")` robos al año, la de estrato 3 sube a `r med("3")`, y la de estrato 6 baja a `r med("6")`. Los robos aumentan desde los estratos bajos hasta los medios y caen en los altos: una forma de U invertida. Las zonas no residenciales registran `r med("No residencial")` robos al año en la unidad típica, aunque con unas pocas zonas (universidades, la Terminal) muy por encima.
+La relación no es monótona. La unidad típica de estrato 1 registra `r med("1")` robos al año, la de estrato 3 sube a `r med("3")`, y la de estrato 6 baja a `r med("6")`. Los robos aumentan desde los estratos bajos hasta los medios y caen en los altos: una forma de U invertida. Las zonas no residenciales registran `r med("No residencial")` robos al año en la unidad típica, aunque con unas pocas zonas (universidades, la Terminal) muy por encima. Las veredas, que tienen otra metodología de estratificación y por eso van aparte, registran `r med("Vereda")`.
 
 **¿Es un efecto del tamaño de la unidad?** Una unidad más grande podría tener más robos solo por tener más calles. Se revisa con la correlación entre el tamaño (número de manzanas) y los robos promedio de cada unidad residencial:
 
 ```{r}
 media_unidad <- tabla |>
-  filter(estrato_moda != "No residencial") |>
+  filter(!estrato_modelo %in% c("No residencial", "Vereda")) |>   # unidades residenciales con estratificación urbana
   group_by(codigo_barrio, n_manzanas) |>
   summarise(media = mean(n), .groups = "drop")           # robos promedio por año de cada unidad
 
@@ -263,7 +263,7 @@ Primero, entre unidades de un mismo estrato:
 
 ```{r}
 dispersion_estrato <- tabla |>
-  group_by(estrato_moda) |>
+  group_by(estrato_modelo) |>
   summarise(media    = mean(n),
             varianza = var(n),
             razon    = varianza / media,       # 1 si se cumpliera el supuesto Poisson
@@ -296,8 +296,8 @@ razon_med <- round(median(disp_unidad$varianza / disp_unidad$media), 1)
 
 **Evidencia:**
 
--   Entre unidades de un mismo estrato, la varianza es entre `r round(min(dispersion_estrato$razon), 1)` y `r round(max(dispersion_estrato$razon), 1)` veces la media. Esta dispersión refleja, en buena parte, que las unidades de un mismo estrato son muy distintas entre sí.
--   Incluso dentro de una misma unidad, de un año a otro, la varianza supera a la media en el `r pct_sobre` % de las unidades, y en la unidad típica es `r razon_med` veces la media. En el gráfico, casi todos los puntos quedan por encima de la línea punteada.
+- Entre unidades de un mismo estrato, la varianza es entre `r round(min(dispersion_estrato$razon), 1)` y `r round(max(dispersion_estrato$razon), 1)` veces la media. Esta dispersión refleja, en buena parte, que las unidades de un mismo estrato son muy distintas entre sí.
+- Incluso dentro de una misma unidad, de un año a otro, la varianza supera a la media en el `r pct_sobre` % de las unidades, y en la unidad típica es `r razon_med` veces la media. En el gráfico, casi todos los puntos quedan por encima de la línea punteada.
 
 La varianza es mayor que la media en los dos niveles. Esto anticipa que un modelo Poisson subestimará la incertidumbre, y justifica usar una verosimilitud Binomial Negativa. Además, la diferencia entre los dos niveles sugiere que una parte de la variación se debe a diferencias persistentes entre unidades, que un modelo jerárquico o espacial puede capturar.
 
@@ -305,7 +305,7 @@ La varianza es mayor que la media en los dos niveles. Esto anticipa que un model
 
 ```{r}
 resumen_unidad <- tabla |>
-  group_by(codigo_barrio, tipo_unidad, zona, estrato_moda) |>
+  group_by(codigo_barrio, tipo_unidad, zona, estrato_moda, estrato_modelo) |>
   summarise(robos_total = sum(n),                   # robos 2012-2022
             robos_anual = mean(n),                  # robos promedio por año
             .groups = "drop")
@@ -362,10 +362,10 @@ moran_robos
 
 El índice es `r round(moran_robos$estimate[1], 2)` (valor *p* \< 0.001): las unidades con muchos robos tienden a estar junto a otras con muchos robos, como se ve en el mapa.
 
-**¿Se debe al estrato?** Los estratos también están agrupados en el espacio (El Poblado, por ejemplo, es un bloque continuo de estrato 6). Si el estrato explicara los robos, estos aparecerían agrupados aunque no hubiera ningún efecto espacial propio. Para descartarlo, se calcula el índice sobre los residuos (se leresta a cada unidad el promedio de su estrato) de una regresión simple de los robos según el estrato y la zona, es decir, sobre la parte de los robos que el estrato y la zona no explican:
+**¿Se debe al estrato?** Los estratos también están agrupados en el espacio (El Poblado, por ejemplo, es un bloque continuo de estrato 6). Si el estrato explicara los robos, estos aparecerían agrupados aunque no hubiera ningún efecto espacial propio. Para descartarlo, se calcula el índice sobre los residuos (se le resta a cada unidad el promedio de su estrato) de una regresión simple de los robos según el estrato y la zona, es decir, sobre la parte de los robos que el estrato y la zona no explican:
 
 ```{r}
-residuos <- resid(lm(log1p(robos_anual) ~ estrato_moda + zona, data = mapa))  # lo que no explican estrato y zona
+residuos <- resid(lm(log1p(robos_anual) ~ estrato_modelo + zona, data = mapa))  # lo que no explican estrato y zona (R descarta el nivel Vereda de zona, repetido en estrato_modelo)
 moran_residuos <- moran.test(residuos, pesos)
 moran_residuos
 ```
@@ -376,10 +376,10 @@ El índice sobre los residuos baja a `r round(moran_residuos$estimate[1], 2)`, p
 
 El análisis descriptivo deja cuatro hallazgos:
 
--   **Forma de U por estrato.** Las unidades de estrato 3 y 4 son las que más robos tienen en promedio; las de estrato 1 y 6, las que menos. Son conteos, no tasas: parte de la diferencia puede venir del tamaño de cada unidad.
--   **Concentración.** La mitad de los robos ocurre en 58 de las 330 unidades, sobre todo en el centro.
--   **Sobredispersión.** La varianza de los conteos es mucho mayor que su media, así que un modelo Poisson no es adecuado; usaremos la Binomial Negativa.
--   **Dependencia espacial.** Las unidades vecinas tienen conteos parecidos (I de Moran = `r round(moran_robos$estimate[1], 2)`). Después de quitar el efecto del estrato y la zona, el parecido baja a `r round(moran_residuos$estimate[1], 2)`, pero no desaparece.
+- **Forma de U invertida por estrato.** Entre las zonas con estratificación urbana, las unidades de estrato 3 y 4 son las que más robos tienen en promedio; las de estrato 1 y 6, las que menos. Son conteos, no tasas: parte de la diferencia puede venir del tamaño de cada unidad.
+- **Concentración.** La mitad de los robos ocurre en 58 de las 330 unidades, sobre todo en el centro.
+- **Sobredispersión.** La varianza de los conteos es mucho mayor que su media, así que un modelo Poisson no es adecuado; usaremos la Binomial Negativa.
+- **Dependencia espacial.** Las unidades vecinas tienen conteos parecidos (I de Moran = `r round(moran_robos$estimate[1], 2)`). Después de quitar el efecto del estrato y la zona, el parecido baja a `r round(moran_residuos$estimate[1], 2)`, pero no desaparece.
 
 A partir de esto planteamos dos preguntas: (Reformular)
 

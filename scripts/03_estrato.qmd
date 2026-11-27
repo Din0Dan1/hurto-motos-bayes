@@ -141,11 +141,24 @@ table(tabla_analisis$estrato_moda[tabla_analisis$anio == 2012])   # unidades por
 
 **Evidencia:** las `r n_distinct(tabla_analisis$codigo_barrio)` unidades quedan con estrato asignado (`r sum(is.na(tabla_analisis$estrato_moda))` sin estrato).
 
+**Pregunta:** ¿el estrato de una vereda se puede comparar con el de un barrio?
+
+**Evidencia:** no. Las veredas (fincas y viviendas dispersas) se estratifican con una metodología distinta, que además de la vivienda mide la capacidad productiva del predio. Las comunas, las cabeceras de corregimiento y las áreas de expansión se estratifican con la metodología urbana. Un estrato 2 en una vereda no mide lo mismo que un estrato 2 en un barrio.
+
+**Decisión:** crear la variable `estrato_modelo`, igual al estrato moda salvo en las veredas, que quedan en su propia categoría "Vereda" (como "No residencial"). Así el estrato rural nunca se compara con el urbano y las veredas se conservan en el mapa. `estrato_moda` se mantiene tal como sale del catastro.
+
+```{r}
+tabla_analisis <- tabla_analisis |>
+  mutate(estrato_modelo = ifelse(zona == "Vereda", "Vereda", estrato_moda))   # veredas: otra metodología de estratificación
+
+table(tabla_analisis$estrato_modelo[tabla_analisis$anio == 2012])   # unidades por categoría
+```
+
 **Primera mirada a la relación con los robos:**
 
 ```{r}
 robos_estrato <- tabla_analisis |>
-  group_by(estrato_moda) |>
+  group_by(estrato_modelo) |>
   summarise(unidades = n_distinct(codigo_barrio),
             media    = mean(n),                      # robos promedio por unidad-año
             varianza = var(n),
@@ -155,12 +168,12 @@ robos_estrato
 
 ```{r}
 #| include: false
-media_e <- function(e) round(robos_estrato$media[robos_estrato$estrato_moda == e], 1)
+media_e <- function(e) round(robos_estrato$media[robos_estrato$estrato_modelo == e], 1)
 ```
 
 Dos patrones dan una primera impresión de qué esperar:
 
-- Los robos no crecen ni decrecen con el estrato: suben hasta los estratos medios y caen en los extremos (`r media_e("1")` robos por unidad-año en estrato 1, `r media_e("3")` en estrato 3 y `r media_e("6")` en estrato 6). La relación parece tener forma de U invertida. Las zonas no residenciales tienen en promedio `r media_e("No residencial")` robos por año.
+- Los robos no crecen ni decrecen con el estrato: suben hasta los estratos medios y caen en los extremos (`r media_e("1")` robos por unidad-año en estrato 1, `r media_e("3")` en estrato 3 y `r media_e("6")` en estrato 6). La relación parece tener forma de U invertida. Las zonas no residenciales tienen en promedio `r media_e("No residencial")` robos por año y las veredas `r media_e("Vereda")`.
 - En todos los grupos la varianza es bastante alta comparada con la media, lo que anticipa que un modelo Poisson (que supone que la varianza de los conteos es igual a su media) se quedará corto.
 
 ```{r}

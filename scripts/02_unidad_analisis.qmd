@@ -125,7 +125,7 @@ tipo <- function(t, col) comparacion_tipo[[col]][comparacion_tipo$tipo_unidad ==
 - Las zonas institucionales (universidades, la Terminal de Transporte, el Estadio, La Alpujarra) reúnen el `r round(tipo("Institucional", "pct_robos"), 1)` % de los robos, pero no tienen vivienda.
 - Las dos áreas "Sin nombre" no registran ningún robo en 11 años. Su código no aparece nunca en la base de hurtos: el sistema de la Policía no las usa, así que sus ceros no indican ausencia de robos sino que esos robos se registran con el código de otra unidad.
 
-**Decisión:** incluir **todas las unidades** salvo las dos áreas "Sin nombre", cuyos ceros son un artefacto del registro. Excluirlas dejaría por fuera zonas residenciales con muchos robos y abriría huecos en el mapa que afectarían la vecindad del modelo espacial. Las diferencias se tratarán con covariables: una variable de **zona** (urbana o rural) y, en el siguiente documento, una categoría **"No residencial"** del estrato para las unidades sin vivienda.
+**Decisión:** incluir **todas las unidades** salvo las dos áreas "Sin nombre", cuyos ceros son un artefacto del registro. Excluirlas dejaría por fuera zonas residenciales con muchos robos y abriría huecos en el mapa que afectarían la vecindad del modelo espacial. Las diferencias se tratarán con covariables: una variable de **zona** con tres niveles (comuna, cabecera o área de expansión, vereda), según la metodología con que se estratifica cada territorio, y, en el siguiente documento, una categoría **"No residencial"** del estrato para las unidades sin vivienda.
 
 ```{r}
 por_anio <- por_anio |> filter(tipo_unidad != "Sin nombre")
