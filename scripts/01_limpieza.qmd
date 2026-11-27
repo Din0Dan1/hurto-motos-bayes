@@ -142,8 +142,6 @@ umbral_faltantes <- 5   # % máximo de faltantes para usar una variable sin adve
 
 ¿Por qué este umbral? Se fija en 5 % como límite de pérdidas leves, pues esta elección no es sensible al valor exacto, es decir, entre las variables de contexto, la de mayor proporción de faltantes que se conserva es edad (1.4 %) y la de menor proporción que se descarta es modelo (30.5 %), de modo que cualquier umbral entre 1.4 % y 30.5 % llevaría a la misma selección.
 
-
-
 **Evidencia:**
 
 - `r length(columnas_vacias)` columnas tienen el 100 % de faltantes (por ejemplo, `r paste(head(columnas_vacias, 3), collapse = ", ")`). No aportan información y se descartan.
@@ -263,7 +261,7 @@ head(sort(table(cod[!grepl("^[0-9]{4}$", cod)]), decreasing = TRUE), 10)
 
 **Evidencia:** los códigos de barrios y veredas tienen 4 dígitos (2 de comuna o corregimiento y 2 de barrio o vereda) precedidos de "\#". Además aparecen zonas que no son barrios: institucionales (`Inst_*`, como universidades o la Terminal de Transporte), áreas de expansión (`AE*`) y áreas urbanas de corregimiento (`AUC*`, las cabeceras de San Antonio de Prado y San Cristóbal). Estas zonas también son unidades de la división administrativa de la ciudad. Por último, hay faltantes del tipo "SIN DATO ...".
 
-**Decisión:** quitar el "#" y conservar el código de todas las unidades, barrios o no, porque todas tienen polígono propio en la capa oficial de barrios y veredas. El tipo de unidad se guarda en la columna `tipo_zona`. Solo los registros "SIN DATO" quedan con ubicación desconocida (`NA`).
+**Decisión:** quitar el "\#" y conservar el código de todas las unidades, barrios o no, porque todas tienen polígono propio en la capa oficial de barrios y veredas. El tipo de unidad se guarda en la columna `tipo_zona`. Solo los registros "SIN DATO" quedan con ubicación desconocida (`NA`).
 
 ```{r}
 hurtos_limpio <- hurtos_limpio |>
