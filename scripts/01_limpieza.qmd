@@ -167,18 +167,14 @@ sum(is.na(hurtos_limpio$edad)) == n_edad_falta   # verificación
 
 ```{r}
 
-mes_corte <- 4                                                                   # primer mes en que aparecen modelos del año siguiente (ver tabla)
 n_edad_baja    <- sum(hurtos_limpio$edad < 10, na.rm = TRUE)                    # víctimas menores de 10 años
 n_modelo_viejo <- sum(hurtos_limpio$modelo < 1950, na.rm = TRUE)                # motos anteriores a 1950 (incluye años imposibles)
 dif_modelo     <- hurtos_limpio$anio - hurtos_limpio$modelo                     # años entre el modelo de la moto y el robo
 n_modelo_sig   <- sum(dif_modelo == -1, na.rm = TRUE)                           # modelo del año siguiente al robo
-n_modelo_temprano <- sum(dif_modelo == -1 & hurtos_limpio$mes < mes_corte, na.rm = TRUE)  # modelo del año siguiente, robado antes del mes de corte
 n_modelo_futuro <- sum(dif_modelo < -1, na.rm = TRUE)                           # modelo posterior al año siguiente
 
-
 c(edad_baja = n_edad_baja, modelo_viejo = n_modelo_viejo,
-  modelo_siguiente = n_modelo_sig, modelo_temprano = n_modelo_temprano,
-  modelo_futuro = n_modelo_futuro)
+  modelo_siguiente = n_modelo_sig, modelo_futuro = n_modelo_futuro)
 ```
 
 **Evidencia:** hay `r n_edad_baja` víctimas con menos de 10 años (varias con edad 1, probablemente un error de digitación) y `r n_modelo_viejo` motos con modelo anterior a 1950, entre ellas años imposibles como 203 o 1010. Además, `r format(n_modelo_sig, big.mark = " ")` motos tienen el modelo del año siguiente al robo, lo cual es normal (las motos se venden con el modelo del año entrante desde mediados de año), mientras que solo `r n_modelo_futuro` tienen una diferencia mayor.
@@ -188,8 +184,9 @@ c(edad_baja = n_edad_baja, modelo_viejo = n_modelo_viejo,
 ```{r}
 hurtos_limpio <- hurtos_limpio |>
   mutate(edad   = ifelse(edad < 10, NA, edad),                            # edades implausibles
-         modelo = ifelse(modelo < 1950 | modelo > anio + 1 |
-                  (modelo == anio + 1 & mes < mes_corte), NA, modelo)
+
+         
+         modelo = ifelse(modelo < 1950 | modelo > anio + 1, NA, modelo))
 # modelos imposibles
 ```
 
