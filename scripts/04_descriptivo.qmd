@@ -34,7 +34,6 @@ capa   <- jsonlite::fromJSON(here("datos", "crudos", "barrios.geojson"))$feature
 ```
 
 ```{r}
-#| include: false
 theme_set(theme_minimal())   # estilo limpio para todos los gráficos del documento
 ```
 
