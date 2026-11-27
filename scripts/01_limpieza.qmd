@@ -189,7 +189,7 @@ c(edad_baja = n_edad_baja, modelo_viejo = n_modelo_viejo,
 hurtos_limpio <- hurtos_limpio |>
   mutate(edad   = ifelse(edad < 10, NA, edad),                            # edades implausibles
          modelo = ifelse(modelo < 1950 | modelo > anio + 1 |
-                  (modelo == anio + 1 & mes < mes_corte), NA, modelo)
+                  (modelo == anio + 1 & mes < mes_corte), NA, modelo))
 # modelos imposibles
 ```
 
