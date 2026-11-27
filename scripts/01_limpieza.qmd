@@ -140,6 +140,10 @@ Las demás columnas solo describen el robo o a la víctima. De ellas se conserva
 umbral_faltantes <- 5   # % máximo de faltantes para usar una variable sin advertencias
 ```
 
+¿Por qué este umbral? Se fija en 5 % como límite de pérdidas leves, pues esta elección no es sensible al valor exacto, es decir, entre las variables de contexto, la de mayor proporción de faltantes que se conserva es edad (1.4 %) y la de menor proporción que se descarta es modelo (30.5 %), de modo que cualquier umbral entre 1.4 % y 30.5 % llevaría a la misma selección.
+
+
+
 **Evidencia:**
 
 - `r length(columnas_vacias)` columnas tienen el 100 % de faltantes (por ejemplo, `r paste(head(columnas_vacias, 3), collapse = ", ")`). No aportan información y se descartan.
@@ -282,6 +286,8 @@ hurtos_limpio <- hurtos_limpio |>
          latitud, longitud, sexo, edad, modalidad, violencia, modelo)
 
 write.csv(hurtos_limpio, here("datos", "procesados", "hurtos_limpio.csv"), row.names = FALSE)
+
+
 ```
 
 | Etapa             | Registros                                         |
