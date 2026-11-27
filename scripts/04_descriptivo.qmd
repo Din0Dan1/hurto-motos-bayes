@@ -62,6 +62,23 @@ n_2020 <- por_anio$n[por_anio$anio == 2020]
 
 En el periodo se registraron `r format(nrow(hurtos), big.mark = " ")` robos de moto, entre `r format(min(por_anio$n), big.mark = " ")` y `r format(max(por_anio$n), big.mark = " ")` por año, sin una tendencia clara de aumento o disminución. Se destaca la caída de 2020: `r format(n_2020, big.mark = " ")` robos frente a `r format(n_2019, big.mark = " ")` en 2019 (`r round((n_2020 / n_2019 - 1) * 100, 1)` %), coherente con las restricciones de movilidad de la pandemia.
 
+```{r}
+#| fig-cap: "Robos de moto por mes del año, acumulados 2012-2022. Fuente: MEData."
+por_mes <- hurtos |>
+  count(mes) |>                                           # robos de cada mes, sumando los 11 años
+  mutate(pct = n / sum(n) * 100)                          # % del total
+
+ggplot(por_mes, aes(x = factor(mes), y = n)) +
+  geom_col(fill = "#E67E22") +
+    expand_limits(y = c(0,5000)) +
+  geom_hline(yintercept = sum(por_mes$n) / 12, linetype = "dashed") +   # lo esperado si todos los meses fueran iguales
+  scale_x_discrete(labels = c("Ene", "Feb", "Mar", "Abr", "May", "Jun",
+                              "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")) +
+  labs(x = "Mes", y = "Robos de moto (2012-2022)")
+```
+
+Los robos se reparten de forma casi uniforme entre los meses: cada mes tiene entre el `r round(min(por_mes$pct), 1)` % y el `r round(max(por_mes$pct), 1)` % del total, cerca del 8.3 % que tendría cada uno si todos fueran iguales (línea punteada). No hay una estacionalidad marcada.
+
 ## 2. Perfil del robo
 
 ### Con y sin violencia
