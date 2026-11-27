@@ -93,7 +93,11 @@ por_anio <- por_anio |>
            grepl("^SN", codigo_barrio)        ~ "Sin nombre",
            grepl("^[5-9]0", codigo_barrio)    ~ "Vereda",       # corregimientos 50 a 90
            TRUE                               ~ "Barrio"),      # comunas 01 a 16
-         zona = ifelse(tipo_unidad == "Vereda", "Rural", "Urbana"))
+         zona = case_when(
+           tipo_unidad == "Vereda" ~ "Vereda",                                  # rural disperso: estratificación de fincas y viviendas dispersas
+           tipo_unidad %in% c("Cabecera de corregimiento",
+                              "Área de expansión") ~ "Cabecera o expansión",    # centros poblados y suelo de expansión: estratificación urbana
+           TRUE ~ "Comuna"))                                                    # las 16 comunas
 
 comparacion_tipo <- por_anio |>
   group_by(tipo_unidad) |>
@@ -117,7 +121,7 @@ tipo <- function(t, col) comparacion_tipo[[col]][comparacion_tipo$tipo_unidad ==
 
 - Los barrios concentran el `r round(tipo("Barrio", "pct_robos"), 1)` % de los robos, con una media de `r round(tipo("Barrio", "media_anual"), 1)` robos por barrio y año y solo `r round(tipo("Barrio", "pct_ceros"), 1)` % de celdas en cero.
 - Las veredas son muy distintas: `r round(tipo("Vereda", "media_anual"), 1)` robos por vereda y año y `r round(tipo("Vereda", "pct_ceros"), 1)` % de ceros. Son unidades más extensas y menos pobladas, con una estratificación rural que no es comparable con la urbana.
-- Las dos cabeceras de corregimiento tienen en promedio `r round(tipo("Cabecera de corregimiento", "media_anual"), 1)` robos al año, y las áreas de expansión `r round(tipo("Área de expansión", "media_anual"), 1)`. Pese a su nombre, varias de estas zonas son urbanas y residenciales: la cabecera de San Antonio de Prado o el área de Pajarito (Ciudadela Nuevo Occidente).
+- Las dos cabeceras de corregimiento tienen en promedio `r round(tipo("Cabecera de corregimiento", "media_anual"), 1)` robos al año, y las áreas de expansión `r round(tipo("Área de expansión", "media_anual"), 1)`. Pese a su nombre, varias de estas zonas son urbanas y residenciales: se decidió entonces crear una variable de zona con tres niveles (comuna, cabecera o área de expansión, vereda), según la metodología con que se estratifica cada territorio.
 - Las zonas institucionales (universidades, la Terminal de Transporte, el Estadio, La Alpujarra) reúnen el `r round(tipo("Institucional", "pct_robos"), 1)` % de los robos, pero no tienen vivienda.
 - Las dos áreas "Sin nombre" no registran ningún robo en 11 años. Su código no aparece nunca en la base de hurtos: el sistema de la Policía no las usa, así que sus ceros no indican ausencia de robos sino que esos robos se registran con el código de otra unidad.
 
